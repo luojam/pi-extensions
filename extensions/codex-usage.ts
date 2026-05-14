@@ -33,6 +33,10 @@ export default function (pi: ExtensionAPI) {
         refreshTimer = setInterval(() => void refreshUsage(ctx), REFRESH_INTERVAL_MS);
     });
 
+    pi.on('agent_end', async (_event, ctx) => {
+        await refreshUsage(ctx);
+    });
+
     pi.on('session_shutdown', () => {
         if (refreshTimer) clearInterval(refreshTimer);
         refreshTimer = undefined;
@@ -120,7 +124,7 @@ function renderStatus(usage: UsageState): string {
 }
 
 function renderUsageWindow({ label, usedPercent, resetsIn }: UsageWindow): string {
-    const reset = resetsIn ? ` (⏳${resetsIn})` : '';
+    const reset = resetsIn ? ` ⏳${resetsIn}⏳` : '';
     return `${label} ${renderUsageBar(usedPercent)} ${Math.round(usedPercent)}%${reset}`;
 }
 
