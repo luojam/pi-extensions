@@ -8,13 +8,13 @@ const PROVIDER_LABEL = 'Codex';
 const USAGE_API_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const REFRESH_INTERVAL_MS = 5 * 60_000;
 const FETCH_TIMEOUT_MS = 10_000;
-const BAR_WIDTH = 10;
+const BAR_WIDTH = 15;
 
 type JsonObject = Record<string, unknown>;
 
 interface UsageWindow {
     label: string;
-    usedPercent: number;
+    remainingPercent: number;
     resetsIn?: string;
 }
 
@@ -111,7 +111,7 @@ function parseUsageWindow(
 
     return {
         label: formatWindowLabel(windowSeconds, fallbackLabel),
-        usedPercent: clampPercent(raw.used_percent),
+        remainingPercent: 100 - clampPercent(raw.used_percent),
         resetsIn: resetAt ? formatResetTime(resetAt) : undefined,
     };
 }
@@ -120,12 +120,12 @@ function renderStatus(usage: UsageState): string {
     if (usage.error) return `${PROVIDER_LABEL} usage: ${usage.error}`;
     if (usage.windows.length === 0) return `${PROVIDER_LABEL} usage: unavailable`;
 
-    return `${PROVIDER_LABEL} · ${usage.windows.map(renderUsageWindow).join(' · ')}`;
+    return `${usage.windows.map(renderUsageWindow).join(' · ')}`;
 }
 
-function renderUsageWindow({ label, usedPercent, resetsIn }: UsageWindow): string {
-    const reset = resetsIn ? ` ⏳${resetsIn}⏳` : '';
-    return `${label} ${renderUsageBar(usedPercent)} ${Math.round(usedPercent)}%${reset}`;
+function renderUsageWindow({ label, remainingPercent, resetsIn }: UsageWindow): string {
+    const reset = resetsIn ? ` ⏳${resetsIn}` : '';
+    return `${label} ${renderUsageBar(remainingPercent)} ${Math.round(remainingPercent)}%${reset}`;
 }
 
 function renderUsageBar(percent: number): string {
