@@ -1,11 +1,9 @@
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import type { AssistantMessage } from '@earendil-works/pi-ai';
 import type {
     ExtensionAPI,
     ExtensionContext,
     ReadonlyFooterDataProvider,
-    SessionEntry,
     Theme,
 } from '@earendil-works/pi-coding-agent';
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
@@ -22,11 +20,6 @@ interface RenderFooterOptions {
     usageLimit: UsageLimit;
 }
 
-interface TokenStats {
-    input: number;
-    output: number;
-}
-
 export function renderFooter({
     width,
     theme,
@@ -36,10 +29,9 @@ export function renderFooter({
     usageLimit,
 }: RenderFooterOptions): string[] {
     const contentWidth = Math.max(0, width - 6);
-    const stats = collectTokenStats(ctx.sessionManager.getBranch());
     const lines = [
         frameLine(renderHeader(contentWidth, theme, footerData, ctx, pi), width, theme, true),
-        frameLine(renderStats(contentWidth, theme, ctx, stats, usageLimit), width, theme, false),
+        frameLine(renderStats(contentWidth, theme, ctx, usageLimit), width, theme, false),
     ];
 
     const statuses = [...footerData.getExtensionStatuses().entries()]
@@ -50,21 +42,6 @@ export function renderFooter({
     }
 
     return lines;
-}
-
-function collectTokenStats(entries: SessionEntry[]): TokenStats {
-    let input = 0;
-    let output = 0;
-
-    for (const entry of entries) {
-        if (entry.type !== 'message' || entry.message.role !== 'assistant') continue;
-
-        const message = entry.message as AssistantMessage;
-        input += message.usage.input;
-        output += message.usage.output;
-    }
-
-    return { input, output };
 }
 
 function renderHeader(
@@ -106,7 +83,6 @@ function renderStats(
     width: number,
     theme: Theme,
     ctx: ExtensionContext,
-    stats: TokenStats,
     usageLimit: UsageLimit,
 ): string {
     const usage = ctx.getContextUsage();
@@ -124,28 +100,9 @@ function renderStats(
               ? theme.fg('warning', contextText)
               : theme.fg('dim', contextText);
 
-    const tokenParts: string[] = [];
-    if (stats.input) {
-        tokenParts.push(`${theme.fg('text', '↑')}${theme.fg('dim', formatTokens(stats.input))}`);
-    }
-    if (stats.output) {
-        tokenParts.push(`${theme.fg('text', '↓')}${theme.fg('dim', formatTokens(stats.output))}`);
-    }
-
-    const tokensDisplay = tokenParts.join(' ');
-    const usageWidth = Math.max(
-        0,
-        width -
-            visibleWidth(tokensDisplay) -
-            (tokenParts.length ? 3 : 0) -
-            visibleWidth(themedContext) -
-            2,
-    );
+    const usageWidth = Math.max(0, width - visibleWidth(themedContext) - 2);
     const usageDisplay = theme.fg('dim', formatUsageLimit(usageLimit, usageWidth));
-    const left = tokenParts.length
-        ? `${tokensDisplay} ${theme.fg('dim', '─')} ${usageDisplay}`
-        : usageDisplay;
-    return alignContent(left, themedContext, width, theme);
+    return alignContent(usageDisplay, themedContext, width, theme);
 }
 
 function formatUsageLimit(usage: UsageLimit, availableWidth: number): string {
