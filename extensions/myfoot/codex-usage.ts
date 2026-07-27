@@ -40,12 +40,14 @@ export async function fetchUsageLimit(signal?: AbortSignal): Promise<UsageLimit>
             asObject(rateLimit?.secondary_window),
         ].filter((window): window is JsonObject => window !== undefined);
         const weeklyWindow = usageWindows.sort(
-            (a, b) => Number(b.limit_window_seconds || 0) - Number(a.limit_window_seconds || 0),
+            (a, b) => Number(b.limit_window_seconds || 0) - Number(a.limit_window_seconds || 0)
         )[0];
-        return parseUsageWindow(weeklyWindow, 'W') ?? {
-            kind: 'message',
-            text: 'Codex usage: unavailable',
-        };
+        return (
+            parseUsageWindow(weeklyWindow, 'W') ?? {
+                kind: 'message',
+                text: 'Codex usage: unavailable',
+            }
+        );
     } catch {
         return { kind: 'message', text: 'Codex usage: unavailable' };
     }
@@ -74,7 +76,7 @@ function getCodexToken(): string | undefined {
     if (typeof access === 'string' && access) return access;
 
     const codexAuth = readJson(
-        join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json'),
+        join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json')
     );
     const codexAccess = asObject(asObject(codexAuth)?.tokens)?.access_token;
     return typeof codexAccess === 'string' && codexAccess ? codexAccess : undefined;

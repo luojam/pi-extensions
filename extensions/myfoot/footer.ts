@@ -49,13 +49,13 @@ function renderHeader(
     theme: Theme,
     footerData: ReadonlyFooterDataProvider,
     ctx: ExtensionContext,
-    pi: ExtensionAPI,
+    pi: ExtensionAPI
 ): string {
     const modelName = ctx.model?.id ?? 'no-model';
     const thinking = ctx.model?.reasoning ? pi.getThinkingLevel() : undefined;
     const modelAndThinking = thinking
         ? `${modelName} ─ ${theme.getThinkingBorderColor(thinking)(
-              thinking === 'off' ? 'thinking off' : thinking,
+              thinking === 'off' ? 'thinking off' : thinking
           )}`
         : modelName;
     let modelDisplay =
@@ -83,7 +83,7 @@ function renderStats(
     width: number,
     theme: Theme,
     ctx: ExtensionContext,
-    usageLimit: UsageLimit,
+    usageLimit: UsageLimit
 ): string {
     const usage = ctx.getContextUsage();
     const contextWindow = usage?.contextWindow ?? ctx.model?.contextWindow ?? 0;

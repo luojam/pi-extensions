@@ -1,3 +1,3 @@
 # π Pi extensions
 
-Small pi extension with codex usage stats and nicer footer.
+myfoot is a pi extension with codex usage stats and nicer footer.
