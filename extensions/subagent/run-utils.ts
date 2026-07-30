@@ -3,6 +3,7 @@ import {
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
     truncateHead,
+    type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
 
 export const MODEL_OUTPUT_MAX_BYTES = DEFAULT_MAX_BYTES;
@@ -87,6 +88,22 @@ export function emptyUsage(): Usage {
         totalTokens: 0,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     };
+}
+
+export function usageFromEntries(entries: SessionEntry[]): Usage {
+    const usage = emptyUsage();
+    for (const entry of entries) {
+        if ((entry.type === 'branch_summary' || entry.type === 'compaction') && entry.usage) {
+            addUsage(usage, entry.usage);
+        } else if (entry.type === 'message') {
+            if (entry.message.role === 'assistant') {
+                addUsage(usage, entry.message.usage);
+            } else if (entry.message.role === 'toolResult' && entry.message.usage) {
+                addUsage(usage, entry.message.usage);
+            }
+        }
+    }
+    return usage;
 }
 
 export function addUsage(total: Usage, usage: Usage): void {
