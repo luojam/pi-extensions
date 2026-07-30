@@ -65,12 +65,16 @@ export function truncateModelOutput(text: string): string {
     if (!truncation.truncated) return text;
 
     const suffix = '\n\n[Subagent output truncated to 2,000 lines or 50 KiB.]';
-    const content = truncateHead(text, {
+    const contentMaxBytes = MODEL_OUTPUT_MAX_BYTES - Buffer.byteLength(suffix, 'utf8');
+    const contentTruncation = truncateHead(text, {
         // Reserve two line breaks and the suffix itself so the complete tool result
         // remains within Pi's limits.
         maxLines: MODEL_OUTPUT_MAX_LINES - 2,
-        maxBytes: MODEL_OUTPUT_MAX_BYTES - Buffer.byteLength(suffix, 'utf8'),
-    }).content;
+        maxBytes: contentMaxBytes,
+    });
+    const content = contentTruncation.firstLineExceedsLimit
+        ? truncateUtf8Head(text, contentMaxBytes)
+        : contentTruncation.content;
     return content + suffix;
 }
 
