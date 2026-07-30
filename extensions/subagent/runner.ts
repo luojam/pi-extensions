@@ -1,5 +1,10 @@
 import { dirname, resolve } from 'node:path';
-import type { AuthResult, Provider, Usage } from '@earendil-works/pi-ai';
+import {
+    InMemoryCredentialStore,
+    type AuthResult,
+    type Provider,
+    type Usage,
+} from '@earendil-works/pi-ai';
 import {
     type AgentSession,
     createAgentSession,
@@ -176,7 +181,10 @@ export class SubagentRunner {
         // The inherited effective provider is registered for every run. Avoid
         // applying the child's models.json as a second, potentially conflicting
         // provider overlay.
-        return (this.modelRuntimePromise ??= ModelRuntime.create({ modelsPath: null }));
+        return (this.modelRuntimePromise ??= ModelRuntime.create({
+            credentials: new InMemoryCredentialStore(),
+            modelsPath: null,
+        }));
     }
 
     private async runSerial(options: SubagentRunOptions): Promise<SubagentRunResult> {
