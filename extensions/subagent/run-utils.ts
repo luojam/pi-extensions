@@ -1,6 +1,12 @@
 import type { Usage } from '@earendil-works/pi-ai';
+import {
+    DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_LINES,
+    truncateHead,
+} from '@earendil-works/pi-coding-agent';
 
-export const MODEL_OUTPUT_MAX_BYTES = 50 * 1024;
+export const MODEL_OUTPUT_MAX_BYTES = DEFAULT_MAX_BYTES;
+export const MODEL_OUTPUT_MAX_LINES = DEFAULT_MAX_LINES;
 export const UPDATE_TEXT_MAX_BYTES = 8 * 1024;
 
 function safeHeadBoundary(text: string, index: number): number {
@@ -52,11 +58,20 @@ export function truncateUtf8Tail(text: string, maxBytes: number): string {
 }
 
 export function truncateModelOutput(text: string): string {
-    if (Buffer.byteLength(text, 'utf8') <= MODEL_OUTPUT_MAX_BYTES) return text;
-    const suffix = '\n\n[Subagent output truncated to 50 KiB.]';
-    return (
-        truncateUtf8Head(text, MODEL_OUTPUT_MAX_BYTES - Buffer.byteLength(suffix, 'utf8')) + suffix
-    );
+    const truncation = truncateHead(text, {
+        maxLines: MODEL_OUTPUT_MAX_LINES,
+        maxBytes: MODEL_OUTPUT_MAX_BYTES,
+    });
+    if (!truncation.truncated) return text;
+
+    const suffix = '\n\n[Subagent output truncated to 2,000 lines or 50 KiB.]';
+    const content = truncateHead(text, {
+        // Reserve two line breaks and the suffix itself so the complete tool result
+        // remains within Pi's limits.
+        maxLines: MODEL_OUTPUT_MAX_LINES - 2,
+        maxBytes: MODEL_OUTPUT_MAX_BYTES - Buffer.byteLength(suffix, 'utf8'),
+    }).content;
+    return content + suffix;
 }
 
 export function emptyUsage(): Usage {

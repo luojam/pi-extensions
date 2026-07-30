@@ -21,6 +21,7 @@ import {
 import type { SubagentDetails, SubagentRunOptions, SubagentRunResult } from './types.ts';
 
 const SHUTDOWN_GRACE_MS = 3_000;
+const TEXT_UPDATE_THROTTLE_MS = 100;
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -332,6 +333,39 @@ export class SubagentRunner {
         const emitUpdate = (status: string): void => {
             options.onUpdate?.(makeDetails(), status);
         };
+        let updateTimer: NodeJS.Timeout | undefined;
+        let updateDirty = false;
+        let lastUpdateAt = 0;
+        const clearUpdateTimer = (): void => {
+            if (!updateTimer) return;
+            clearTimeout(updateTimer);
+            updateTimer = undefined;
+        };
+        const emitTextUpdate = (): void => {
+            if (!updateDirty) return;
+            updateDirty = false;
+            lastUpdateAt = Date.now();
+            emitUpdate(streamedText || '(subagent responding…)');
+        };
+        const scheduleTextUpdate = (): void => {
+            if (!options.onUpdate) return;
+            updateDirty = true;
+            const delay = TEXT_UPDATE_THROTTLE_MS - (Date.now() - lastUpdateAt);
+            if (delay <= 0) {
+                clearUpdateTimer();
+                emitTextUpdate();
+                return;
+            }
+            updateTimer ??= setTimeout(() => {
+                updateTimer = undefined;
+                emitTextUpdate();
+            }, delay);
+        };
+        const emitToolStatus = (status: string): void => {
+            clearUpdateTimer();
+            updateDirty = false;
+            emitUpdate(status);
+        };
 
         let unsubscribe = (): void => {};
         let abortPromise: Promise<void> | undefined;
@@ -350,11 +384,11 @@ export class SubagentRunner {
                         streamedText + event.assistantMessageEvent.delta,
                         UPDATE_TEXT_MAX_BYTES
                     );
-                    emitUpdate(streamedText || '(subagent responding…)');
+                    scheduleTextUpdate();
                 } else if (event.type === 'tool_execution_start') {
-                    emitUpdate(`Running ${event.toolName}…`);
+                    emitToolStatus(`Running ${event.toolName}…`);
                 } else if (event.type === 'tool_execution_end') {
-                    emitUpdate(`Finished ${event.toolName}…`);
+                    emitToolStatus(`Finished ${event.toolName}…`);
                 }
 
                 if (event.type === 'message_end' && event.message.role === 'assistant') {
@@ -399,6 +433,8 @@ export class SubagentRunner {
             if (signal.aborted) throw createAbortError();
             throw error;
         } finally {
+            clearUpdateTimer();
+            updateDirty = false;
             signal.removeEventListener('abort', abort);
             if (abortPromise) await Promise.allSettled([abortPromise]);
             unsubscribe();

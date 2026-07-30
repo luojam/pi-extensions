@@ -58,7 +58,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
         description: [
             'Delegate one task to an isolated, general-purpose in-process Pi AgentSession through the typed SDK.',
             'The subagent can inspect the codebase, run commands, and modify files.',
-            'Calls run serially. Final model-visible output is capped at 50 KiB.',
+            'Calls run serially. Final model-visible output is capped at 2,000 lines or 50 KiB, whichever is reached first.',
         ].join(' '),
         promptSnippet: 'Delegate a self-contained task to a fully capable Pi subagent',
         promptGuidelines: [
