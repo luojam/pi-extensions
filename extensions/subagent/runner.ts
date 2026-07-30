@@ -7,7 +7,9 @@ import {
 } from '@earendil-works/pi-ai';
 import {
     type AgentSession,
+    type AgentSessionRuntime,
     createAgentSession,
+    createAgentSessionRuntime,
     DefaultResourceLoader,
     getAgentDir,
     ModelRuntime,
@@ -142,6 +144,7 @@ function waitForTurn(previous: Promise<void>, signal: AbortSignal): Promise<void
 export class SubagentRunner {
     private serialTail: Promise<void> = Promise.resolve();
     private readonly activeSessions = new Set<AgentSession>();
+    private readonly activeCleanups = new Set<Promise<void>>();
     private readonly runs = new Set<Promise<SubagentRunResult>>();
     private modelRuntimePromise: Promise<ModelRuntime> | undefined;
     private readonly shutdownController = new AbortController();
@@ -168,7 +171,10 @@ export class SubagentRunner {
         this.shuttingDown = true;
         this.shutdownController.abort();
         const aborts = [...this.activeSessions].map((session) => session.abort());
-        const settled = await settleWithin([...aborts, ...this.runs], SHUTDOWN_GRACE_MS);
+        const settled = await settleWithin(
+            [...aborts, ...this.runs, ...this.activeCleanups],
+            SHUTDOWN_GRACE_MS
+        );
         if (!settled) {
             // In-process sessions have no hard-kill fallback. Drop local
             // subscriptions after the cooperative grace period so parent
@@ -202,18 +208,29 @@ export class SubagentRunner {
             ? AbortSignal.any([options.signal, this.shutdownController.signal])
             : this.shutdownController.signal;
 
+        let lateCleanup: Promise<void> | undefined;
         try {
             await waitForTurn(previous, signal);
             if (this.shuttingDown) throw new Error('Subagent runner is shutting down');
-            return await this.runOne(options, signal);
+            return await this.runOne(options, signal, (cleanup) => {
+                lateCleanup = cleanup;
+            });
         } finally {
-            release();
+            if (lateCleanup) {
+                // Cancellation may return to the caller before extension startup
+                // settles. Keep the serial gate closed until that session has been
+                // torn down so a subsequent reload cannot overlap its extensions.
+                void lateCleanup.then(release, release);
+            } else {
+                release();
+            }
         }
     }
 
     private async runOne(
         options: SubagentRunOptions,
-        signal: AbortSignal
+        signal: AbortSignal,
+        holdGateUntil: (cleanup: Promise<void>) => void
     ): Promise<SubagentRunResult> {
         if (signal.aborted) throw createAbortError();
 
@@ -251,7 +268,24 @@ export class SubagentRunner {
                       ),
                   }),
         });
-        await raceWithAbort(resourceLoader.reload(), signal);
+        // reload() is not abort-aware. Return cancellation promptly, but keep the
+        // serial gate closed until package resolution and extension factories settle
+        // so a subsequent reload cannot overlap them.
+        const reload = resourceLoader.reload();
+        try {
+            await raceWithAbort(reload, signal);
+        } catch (error) {
+            if (signal.aborted) {
+                holdGateUntil(
+                    reload.then(
+                        () => undefined,
+                        () => undefined
+                    )
+                );
+                throw createAbortError();
+            }
+            throw error;
+        }
         if (signal.aborted) throw createAbortError();
         if (this.shuttingDown) throw new Error('Subagent runner is shutting down');
 
@@ -265,25 +299,13 @@ export class SubagentRunner {
 
         let auth: AuthResult | undefined;
         try {
-            const [providerAuth, requestAuth] = await raceWithAbort(
-                Promise.all([
-                    options.modelRegistry.getProviderAuth(options.model.provider),
-                    options.modelRegistry.getApiKeyAndHeaders(options.model),
-                ]),
+            // Resolve once so baseUrl, credentials, headers, and env all come from
+            // the same provider-auth snapshot. This is sufficient for Codex auth;
+            // model-specific configured headers require an atomic registry API.
+            auth = await raceWithAbort(
+                options.modelRegistry.getProviderAuth(options.model.provider),
                 signal
             );
-            if (!requestAuth.ok) throw new Error(requestAuth.error);
-            if (providerAuth) {
-                auth = {
-                    ...providerAuth,
-                    env: requestAuth.env ?? providerAuth.env,
-                    auth: {
-                        ...providerAuth.auth,
-                        apiKey: requestAuth.apiKey ?? providerAuth.auth.apiKey,
-                        headers: requestAuth.headers ?? providerAuth.auth.headers,
-                    },
-                };
-            }
         } catch (error) {
             if (signal.aborted) throw createAbortError();
             throw new Error(
@@ -299,33 +321,56 @@ export class SubagentRunner {
         // ModelRegistry is backed by the parent's ModelRuntime and therefore
         // includes --api-key overrides and providers registered by extensions.
         // Install its effective provider in the isolated child runtime with the
-        // already-resolved model auth (including headers, base URL, and provider env).
+        // atomically resolved provider auth (including base URL and provider env).
         modelRuntime.registerNativeProvider(providerWithInheritedAuth(parentProvider, auth));
         if (signal.aborted) throw createAbortError();
         if (this.shuttingDown) throw new Error('Subagent runner is shutting down');
 
-        const sessionCreation = createAgentSession({
-            cwd: options.cwd,
-            agentDir,
-            model: options.model,
-            thinkingLevel: options.thinkingLevel,
-            modelRuntime,
-            excludeTools: ['subagent'],
-            resourceLoader,
-            settingsManager,
-            sessionManager: SessionManager.inMemory(options.cwd),
-        });
+        const sessionManager = SessionManager.inMemory(options.cwd);
+        const runtimeCreation = createAgentSessionRuntime(
+            async ({ cwd, sessionManager: runtimeSessionManager, sessionStartEvent }) => {
+                const result = await createAgentSession({
+                    cwd,
+                    agentDir,
+                    model: options.model,
+                    thinkingLevel: options.thinkingLevel,
+                    modelRuntime,
+                    excludeTools: ['subagent'],
+                    resourceLoader,
+                    settingsManager,
+                    sessionManager: runtimeSessionManager,
+                    sessionStartEvent,
+                });
+                const diagnostics: [] = [];
+                return {
+                    ...result,
+                    services: {
+                        cwd,
+                        agentDir,
+                        modelRuntime,
+                        resourceLoader,
+                        settingsManager,
+                        diagnostics,
+                    },
+                    diagnostics,
+                };
+            },
+            { cwd: options.cwd, agentDir, sessionManager }
+        );
+        let runtime: AgentSessionRuntime;
         let session: AgentSession;
         try {
-            ({ session } = await raceWithAbort(sessionCreation, signal));
+            runtime = await raceWithAbort(runtimeCreation, signal);
+            session = runtime.session;
         } catch (error) {
             if (signal.aborted) {
                 // Session creation is not abort-aware. If it eventually finishes,
-                // tear down the unobserved session rather than leaking it.
-                void sessionCreation
-                    .then(async ({ session: lateSession }) => {
-                        await settleWithin([lateSession.abort()], SHUTDOWN_GRACE_MS);
-                        lateSession.dispose();
+                // tear down the unobserved session rather than leaking it. Extensions
+                // have not been bound yet, so no lifecycle shutdown is required.
+                void runtimeCreation
+                    .then(async (lateRuntime) => {
+                        await settleWithin([lateRuntime.session.abort()], SHUTDOWN_GRACE_MS);
+                        lateRuntime.session.dispose();
                     })
                     .catch(() => undefined);
             }
@@ -333,6 +378,13 @@ export class SubagentRunner {
         }
 
         this.activeSessions.add(session);
+        let finishCleanup!: () => void;
+        const cleanupDone = new Promise<void>((resolveCleanup) => {
+            finishCleanup = resolveCleanup;
+        });
+        this.activeCleanups.add(cleanupDone);
+        void cleanupDone.then(() => this.activeCleanups.delete(cleanupDone));
+
         let streamedText = '';
         let lastStopReason: string | undefined;
         let lastErrorMessage: string | undefined;
@@ -385,12 +437,40 @@ export class SubagentRunner {
 
         let unsubscribe = (): void => {};
         let abortPromise: Promise<void> | undefined;
+        let cleanupTransferred = false;
         const abort = () => {
             abortPromise ??= session.abort();
             void abortPromise.catch(() => undefined);
         };
+        const cleanupSession = async (): Promise<void> => {
+            try {
+                clearUpdateTimer();
+                updateDirty = false;
+                signal.removeEventListener('abort', abort);
+                if (abortPromise) await Promise.allSettled([abortPromise]);
+                unsubscribe();
+                // Keep the session active while lifecycle shutdown runs so shutdownOnce()
+                // can still force-dispose it if an extension handler exceeds the grace period.
+                // AgentSession.dispose() only releases session resources. The runtime
+                // first emits session_shutdown so extensions can clean up their own.
+                await runtime.dispose();
+                this.activeSessions.delete(session);
+            } finally {
+                finishCleanup();
+            }
+        };
 
         try {
+            signal.addEventListener('abort', abort, { once: true });
+            if (signal.aborted) {
+                abort();
+                throw createAbortError();
+            }
+            if (this.shuttingDown) {
+                abort();
+                throw new Error('Subagent runner is shutting down');
+            }
+
             unsubscribe = session.subscribe((event) => {
                 if (
                     event.type === 'message_update' &&
@@ -404,7 +484,7 @@ export class SubagentRunner {
                 } else if (event.type === 'tool_execution_start') {
                     emitToolStatus(`Running ${event.toolName}…`);
                 } else if (event.type === 'tool_execution_end') {
-                    emitToolStatus(`Finished ${event.toolName}…`);
+                    emitToolStatus(`Finished ${event.toolName}`);
                 }
 
                 if (event.type === 'message_end' && event.message.role === 'assistant') {
@@ -412,16 +492,24 @@ export class SubagentRunner {
                     lastErrorMessage = event.message.errorMessage;
                 }
             });
-            signal.addEventListener('abort', abort, { once: true });
 
-            if (signal.aborted) {
-                abort();
+            // SDK sessions do not start the extension lifecycle until the host binds
+            // them. This emits session_start and resources_discover before prompting.
+            // Return cancellation promptly, but do not dispose concurrently with a
+            // handler that is still mutating extension state.
+            const binding = session.bindExtensions({});
+            try {
+                await raceWithAbort(binding, signal);
+            } catch (error) {
+                if (!signal.aborted) throw error;
+
+                cleanupTransferred = true;
+                const lateCleanup = binding.then(cleanupSession, cleanupSession);
+                holdGateUntil(lateCleanup);
                 throw createAbortError();
             }
-            if (this.shuttingDown) {
-                abort();
-                throw new Error('Subagent runner is shutting down');
-            }
+            if (signal.aborted) throw createAbortError();
+            if (this.shuttingDown) throw new Error('Subagent runner is shutting down');
 
             await session.prompt(`Task: ${options.task}`, {
                 expandPromptTemplates: false,
@@ -448,13 +536,7 @@ export class SubagentRunner {
             if (signal.aborted) throw createAbortError();
             throw error;
         } finally {
-            clearUpdateTimer();
-            updateDirty = false;
-            signal.removeEventListener('abort', abort);
-            if (abortPromise) await Promise.allSettled([abortPromise]);
-            unsubscribe();
-            this.activeSessions.delete(session);
-            session.dispose();
+            if (!cleanupTransferred) await cleanupSession();
         }
     }
 }
