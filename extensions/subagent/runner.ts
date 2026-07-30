@@ -7,6 +7,7 @@ import {
     getAgentDir,
     ModelRuntime,
     SessionManager,
+    type SessionEntry,
     type SessionStats,
     SettingsManager,
 } from '@earendil-works/pi-coding-agent';
@@ -43,37 +44,32 @@ function providerWithInheritedAuth(provider: Provider, auth: AuthResult): Provid
     };
 
     // Providers may be class instances, so spreading them can discard methods or
-    // break private-field access. Proxy all behavior to the effective parent
-    // provider and replace only its authentication resolver.
+    // break private-field access. Proxy request behavior to the effective parent
+    // provider and replace only its authentication resolver. Do not inherit
+    // refreshModels: the child runtime has a separate empty model store, while a
+    // refresh bound to the parent provider can mutate its shared dynamic catalog.
     return new Proxy(provider, {
         get(target, property) {
             if (property === 'auth') return inheritedAuth;
+            if (property === 'refreshModels') return undefined;
             const value: unknown = Reflect.get(target, property, target);
             return typeof value === 'function' ? value.bind(target) : value;
         },
     });
 }
 
-function usageFromStats(stats: SessionStats, assistantUsage: Usage): Usage {
-    const usage: Usage = {
-        input: stats.tokens.input,
-        output: stats.tokens.output,
-        cacheRead: stats.tokens.cacheRead,
-        cacheWrite: stats.tokens.cacheWrite,
-        totalTokens: stats.tokens.total,
-        cost: {
-            input: assistantUsage.cost.input,
-            output: assistantUsage.cost.output,
-            cacheRead: assistantUsage.cost.cacheRead,
-            cacheWrite: assistantUsage.cost.cacheWrite,
-            total: stats.cost,
-        },
-    };
-    if (assistantUsage.cacheWrite1h !== undefined) {
-        usage.cacheWrite1h = assistantUsage.cacheWrite1h;
-    }
-    if (assistantUsage.reasoning !== undefined) {
-        usage.reasoning = assistantUsage.reasoning;
+function usageFromEntries(entries: SessionEntry[]): Usage {
+    const usage = emptyUsage();
+    for (const entry of entries) {
+        if ((entry.type === 'branch_summary' || entry.type === 'compaction') && entry.usage) {
+            addUsage(usage, entry.usage);
+        } else if (entry.type === 'message') {
+            if (entry.message.role === 'assistant') {
+                addUsage(usage, entry.message.usage);
+            } else if (entry.message.role === 'toolResult' && entry.message.usage) {
+                addUsage(usage, entry.message.usage);
+            }
+        }
     }
     return usage;
 }
@@ -316,7 +312,6 @@ export class SubagentRunner {
         }
 
         this.activeSessions.add(session);
-        const assistantUsage = emptyUsage();
         let streamedText = '';
         let lastStopReason: string | undefined;
         let lastErrorMessage: string | undefined;
@@ -392,7 +387,6 @@ export class SubagentRunner {
                 }
 
                 if (event.type === 'message_end' && event.message.role === 'assistant') {
-                    addUsage(assistantUsage, event.message.usage);
                     lastStopReason = event.message.stopReason;
                     lastErrorMessage = event.message.errorMessage;
                 }
@@ -427,7 +421,7 @@ export class SubagentRunner {
             return {
                 text: truncateModelOutput(text),
                 details: makeDetails(),
-                usage: usageFromStats(stats, assistantUsage),
+                usage: usageFromEntries(session.sessionManager.getEntries()),
             };
         } catch (error) {
             if (signal.aborted) throw createAbortError();
