@@ -1,48 +1,68 @@
+import { homedir } from 'node:os';
+import { sep } from 'node:path';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
-import { keyHint, type Theme } from '@earendil-works/pi-coding-agent';
-import { truncateToWidth, type Component } from '@earendil-works/pi-tui';
+import { keyHint, keyText, type Theme } from '@earendil-works/pi-coding-agent';
+import { truncateToWidth, visibleWidth, type Component } from '@earendil-works/pi-tui';
 import { truncateUtf8Head, truncateUtf8Tail } from './run-utils.ts';
 import type { SubagentRunSnapshot, SubagentRunState, SubagentToolCallSnapshot } from './types.ts';
 
-const TASK_MAX_BYTES = 512;
-const FALLBACK_MAX_BYTES = 2 * 1024;
-const EXPANDED_TEXT_MAX_BYTES = 8 * 1024;
+const TASK_SUMMARY_MAX_BYTES = 512;
+const TOOL_SUMMARY_MAX_BYTES = 1_024;
+const COLLAPSED_TAIL_MAX_BYTES = 384;
+const FALLBACK_MAX_BYTES = 2 * 1_024;
+const EXPANDED_TEXT_MAX_BYTES = 8 * 1_024;
 const TASK_MAX_LINES = 8;
 const TAIL_MAX_LINES = 16;
 
-class WidthSafeLines implements Component {
-    private readonly lines: () => string[];
+type ThemeColor = 'toolOutput' | 'muted' | 'dim' | 'error';
 
-    constructor(lines: () => string[]) {
-        this.lines = lines;
+/** A stateless component which applies the terminal width after styling. */
+class WidthSafeLines implements Component {
+    private readonly getLines: (width: number) => string[];
+
+    constructor(getLines: (width: number) => string[]) {
+        this.getLines = getLines;
     }
 
     render(width: number): string[] {
         if (width <= 0) return [];
-        return this.lines().map((line) => truncateToWidth(line, width));
+        return this.getLines(width).map((line) => truncateToWidth(line, width));
     }
 
     invalidate(): void {
-        // Lines and theme styles are recomputed on every render.
+        // There is no render cache to clear.
     }
 }
 
-function singleLine(text: string): string {
+const ESCAPE_SEQUENCE = /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)?)/gu;
+
+export function sanitizeSingleLine(text: string): string {
     return text
-        .replace(/\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)?)/gu, '')
+        .replace(ESCAPE_SEQUENCE, '')
         .replace(/[\x00-\x1F\x7F-\x9F]/gu, ' ')
         .replace(/\s+/gu, ' ')
         .trim();
 }
 
-function boundedLine(text: string, maxBytes: number): string {
-    return truncateUtf8Head(singleLine(text), maxBytes);
-}
-
 function safeMultiline(text: string): string {
     return text
-        .replace(/\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)?)/gu, '')
-        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/gu, ' ');
+        .replace(/\r\n?/gu, '\n')
+        .replace(ESCAPE_SEQUENCE, '')
+        .replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/gu, ' ');
+}
+
+function boundedLine(text: string, maxBytes: number): string {
+    return truncateUtf8Head(sanitizeSingleLine(text), maxBytes);
+}
+
+function boundedTailLine(text: string, maxBytes: number): string {
+    const lines = safeMultiline(text)
+        .split('\n')
+        .map((line) => sanitizeSingleLine(line))
+        .filter(Boolean);
+    const line = lines.at(-1) ?? '';
+    const tail = truncateUtf8Tail(line, maxBytes);
+    return tail === line ? tail : `…${tail}`;
 }
 
 function boundedMultilineLines(
@@ -51,25 +71,46 @@ function boundedMultilineLines(
     maxLines: number,
     fromTail = false
 ): string[] {
-    const bounded = fromTail
-        ? truncateUtf8Tail(safeMultiline(text), maxBytes)
-        : truncateUtf8Head(safeMultiline(text), maxBytes);
+    const safe = safeMultiline(text);
+    const byteTruncated = Buffer.byteLength(safe, 'utf8') > maxBytes;
+    const bounded = fromTail ? truncateUtf8Tail(safe, maxBytes) : truncateUtf8Head(safe, maxBytes);
     const allLines = bounded.split('\n');
-    if (allLines.length <= maxLines) return allLines;
-    return fromTail
-        ? [`… ${allLines.length - maxLines} earlier lines omitted`, ...allLines.slice(-maxLines)]
-        : [...allLines.slice(0, maxLines), `… ${allLines.length - maxLines} more lines omitted`];
+    const lines =
+        allLines.length <= maxLines
+            ? allLines
+            : fromTail
+              ? allLines.slice(-maxLines)
+              : allLines.slice(0, maxLines);
+    const omittedLineCount = Math.max(0, allLines.length - maxLines);
+
+    if (fromTail && (byteTruncated || omittedLineCount > 0)) {
+        return [
+            byteTruncated
+                ? '… earlier content omitted'
+                : `… ${omittedLineCount} earlier lines omitted`,
+            ...lines,
+        ];
+    }
+    if (!fromTail && (byteTruncated || omittedLineCount > 0)) {
+        return [
+            ...lines,
+            byteTruncated ? '… more content omitted' : `… ${omittedLineCount} more lines omitted`,
+        ];
+    }
+    return lines;
 }
 
-function formatCost(cost: number): string {
+export function formatCost(cost: number): string {
+    if (!Number.isFinite(cost) || cost < 0) return 'cost ?';
     if (cost === 0) return '$0';
     if (cost < 0.0001) return '<$0.0001';
     return `$${cost.toFixed(cost < 1 ? 4 : 2)}`;
 }
 
 export function formatTokens(tokens: number): string {
+    if (!Number.isFinite(tokens) || tokens < 0) return '?';
     if (tokens < 1_000) return Math.round(tokens).toString();
-    if (tokens < 1_000_000) {
+    if (tokens < 999_500) {
         const value = tokens / 1_000;
         return `${value >= 10 ? Math.round(value) : value.toFixed(1).replace(/\.0$/u, '')}k`;
     }
@@ -78,36 +119,47 @@ export function formatTokens(tokens: number): string {
 }
 
 export function formatElapsed(milliseconds: number): string {
-    const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) return 'elapsed ?';
+    const seconds = Math.floor(milliseconds / 1_000);
     if (seconds < 60) return `${seconds}s`;
     const minutes = Math.floor(seconds / 60);
     const remainder = seconds % 60;
     if (minutes < 60) return `${minutes}m${remainder ? ` ${remainder}s` : ''}`;
     const hours = Math.floor(minutes / 60);
-    return `${hours}h ${minutes % 60}m`;
+    const minuteRemainder = minutes % 60;
+    return `${hours}h${minuteRemainder ? ` ${minuteRemainder}m` : ''}`;
 }
 
-function formatContext(snapshot: SubagentRunSnapshot): string | undefined {
+function formatContext(snapshot: SubagentRunSnapshot, includeUnknown: boolean): string | undefined {
     const usage = snapshot.contextUsage;
-    if (!usage || usage.tokens === null) return undefined;
-    const percent = usage.percent === null ? '' : ` (${Math.round(usage.percent)}%)`;
-    return `context ${formatTokens(usage.tokens)}/${formatTokens(usage.contextWindow)}${percent}`;
+    if (!usage || (usage.tokens === null && !includeUnknown)) return undefined;
+    const tokens = usage.tokens === null ? '?' : formatTokens(usage.tokens);
+    const percent =
+        usage.percent === null
+            ? includeUnknown
+                ? ' (?%)'
+                : ''
+            : ` (${Math.round(usage.percent)}%)`;
+    return `context ${tokens}/${formatTokens(usage.contextWindow)}${percent}`;
 }
 
 function stateLabel(state: SubagentRunState): string {
+    return state;
+}
+
+function stateMarker(state: SubagentRunState): string {
     switch (state) {
         case 'queued':
-            return 'queued';
         case 'starting':
-            return 'starting';
+            return '…';
         case 'running':
-            return 'running';
+            return '→';
         case 'completed':
-            return 'completed';
+            return '✓';
         case 'failed':
-            return 'failed';
+            return '✗';
         case 'cancelled':
-            return 'cancelled';
+            return '■';
     }
 }
 
@@ -128,16 +180,42 @@ function stateColor(state: SubagentRunState): 'muted' | 'warning' | 'accent' | '
     }
 }
 
+/** Format the manager's bounded input summary without inspecting raw arguments. */
+export function formatToolCallSummary(tool: SubagentToolCallSnapshot): string {
+    const name = boundedLine(tool.name, 128) || 'tool';
+    const input = boundedLine(tool.inputSummary, TOOL_SUMMARY_MAX_BYTES);
+    switch (name) {
+        case 'bash':
+            return input ? `$ ${input}` : '$';
+        case 'read':
+        case 'edit':
+        case 'write':
+        case 'grep':
+            return input ? `${name} ${input}` : name;
+        default:
+            return input ? `${name} ${input}` : name;
+    }
+}
+
+function selectedTool(snapshot: SubagentRunSnapshot): SubagentToolCallSnapshot | undefined {
+    return snapshot.currentTool ?? snapshot.recentToolCalls[0];
+}
+
 function toolSummary(snapshot: SubagentRunSnapshot): string | undefined {
-    const tool = snapshot.currentTool ?? snapshot.recentToolCalls[0];
-    if (!tool) return undefined;
-    const input = tool.inputSummary ? ` ${tool.inputSummary}` : '';
-    return `${tool.name}${input}`;
+    const tool = selectedTool(snapshot);
+    return tool ? formatToolCallSummary(tool) : undefined;
+}
+
+function collapsedActivity(snapshot: SubagentRunSnapshot): string | undefined {
+    const activity = toolSummary(snapshot);
+    if (activity) return activity;
+    const response = boundedTailLine(snapshot.responseTail, COLLAPSED_TAIL_MAX_BYTES);
+    return response ? `response ${response}` : undefined;
 }
 
 function snapshotStats(snapshot: SubagentRunSnapshot): string {
     return [
-        formatContext(snapshot),
+        formatContext(snapshot, false),
         snapshot.turn > 0 ? `turn ${snapshot.turn}` : undefined,
         formatElapsed(snapshot.elapsedMs),
     ]
@@ -153,6 +231,10 @@ export function conciseSnapshotStatus(snapshot: SubagentRunSnapshot): string {
     return `Subagent ${stateLabel(snapshot.state)}`;
 }
 
+function validNumber(value: unknown, minimum = 0): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value >= minimum;
+}
+
 function isToolSnapshot(value: unknown): value is SubagentToolCallSnapshot {
     if (!value || typeof value !== 'object') return false;
     const candidate = value as Partial<SubagentToolCallSnapshot>;
@@ -165,7 +247,8 @@ function isToolSnapshot(value: unknown): value is SubagentToolCallSnapshot {
         (candidate.state === 'running' ||
             candidate.state === 'completed' ||
             candidate.state === 'failed') &&
-        typeof candidate.startedAt === 'number'
+        validNumber(candidate.startedAt) &&
+        (candidate.endedAt === undefined || validNumber(candidate.endedAt))
     );
 }
 
@@ -174,9 +257,9 @@ function hasValidOptionalStats(candidate: Partial<SubagentRunSnapshot>): boolean
     if (
         context !== undefined &&
         !(
-            (typeof context.tokens === 'number' || context.tokens === null) &&
-            typeof context.contextWindow === 'number' &&
-            (typeof context.percent === 'number' || context.percent === null)
+            (context.tokens === null || validNumber(context.tokens)) &&
+            validNumber(context.contextWindow) &&
+            (context.percent === null || validNumber(context.percent))
         )
     ) {
         return false;
@@ -185,12 +268,12 @@ function hasValidOptionalStats(candidate: Partial<SubagentRunSnapshot>): boolean
     const usage = candidate.usage;
     return (
         usage === undefined ||
-        (typeof usage.input === 'number' &&
-            typeof usage.output === 'number' &&
-            typeof usage.cacheRead === 'number' &&
-            typeof usage.cacheWrite === 'number' &&
-            typeof usage.total === 'number' &&
-            typeof usage.cost === 'number')
+        (validNumber(usage.input) &&
+            validNumber(usage.output) &&
+            validNumber(usage.cacheRead) &&
+            validNumber(usage.cacheWrite) &&
+            validNumber(usage.total) &&
+            validNumber(usage.cost))
     );
 }
 
@@ -199,6 +282,7 @@ export function isSubagentRunSnapshot(value: unknown): value is SubagentRunSnaps
     const candidate = value as Partial<SubagentRunSnapshot>;
     return (
         typeof candidate.id === 'string' &&
+        (candidate.sessionId === undefined || typeof candidate.sessionId === 'string') &&
         (candidate.state === 'queued' ||
             candidate.state === 'starting' ||
             candidate.state === 'running' ||
@@ -211,9 +295,11 @@ export function isSubagentRunSnapshot(value: unknown): value is SubagentRunSnaps
         typeof candidate.model.provider === 'string' &&
         typeof candidate.model.id === 'string' &&
         typeof candidate.thinkingLevel === 'string' &&
-        typeof candidate.queuedAt === 'number' &&
-        typeof candidate.elapsedMs === 'number' &&
-        typeof candidate.turn === 'number' &&
+        validNumber(candidate.queuedAt) &&
+        (candidate.startedAt === undefined || validNumber(candidate.startedAt)) &&
+        (candidate.endedAt === undefined || validNumber(candidate.endedAt)) &&
+        validNumber(candidate.elapsedMs) &&
+        validNumber(candidate.turn) &&
         Array.isArray(candidate.recentToolCalls) &&
         candidate.recentToolCalls.every(isToolSnapshot) &&
         (candidate.currentTool === undefined || isToolSnapshot(candidate.currentTool)) &&
@@ -224,9 +310,12 @@ export function isSubagentRunSnapshot(value: unknown): value is SubagentRunSnaps
     );
 }
 
-export function renderSubagentCall(args: { task: string }, theme: Theme): Component {
+export function renderSubagentCall(args: { task?: unknown }, theme: Theme): Component {
     return new WidthSafeLines(() => {
-        const task = boundedLine(args.task, TASK_MAX_BYTES);
+        const task = boundedLine(
+            typeof args.task === 'string' ? args.task : '',
+            TASK_SUMMARY_MAX_BYTES
+        );
         return [
             theme.fg('toolTitle', theme.bold('Subagent')) +
                 (task ? theme.fg('muted', ` · ${task}`) : ''),
@@ -234,11 +323,29 @@ export function renderSubagentCall(args: { task: string }, theme: Theme): Compon
     });
 }
 
-function activityLine(tool: SubagentToolCallSnapshot, current: boolean): string {
-    const marker = current ? '→' : tool.state === 'completed' ? '✓' : '✗';
-    const input = tool.inputSummary ? ` ${tool.inputSummary}` : '';
-    const progress = current && tool.progressSummary ? ` · ${tool.progressSummary}` : '';
-    return `${marker} ${tool.name}${input}${progress}`;
+function activityLine(tool: SubagentToolCallSnapshot, current: boolean, theme: Theme): string {
+    const isCurrent = current && tool.state === 'running';
+    const marker = isCurrent
+        ? '→'
+        : tool.state === 'completed'
+          ? '✓'
+          : tool.state === 'failed'
+            ? '✗'
+            : '…';
+    const color = isCurrent
+        ? 'accent'
+        : tool.state === 'completed'
+          ? 'success'
+          : tool.state === 'failed'
+            ? 'error'
+            : 'warning';
+    const progress =
+        isCurrent && tool.progressSummary
+            ? ` · ${boundedLine(tool.progressSummary, TOOL_SUMMARY_MAX_BYTES)}`
+            : '';
+    return (
+        theme.fg(color, marker) + theme.fg('muted', ` ${formatToolCallSummary(tool)}${progress}`)
+    );
 }
 
 function usageLine(snapshot: SubagentRunSnapshot): string | undefined {
@@ -254,17 +361,26 @@ function usageLine(snapshot: SubagentRunSnapshot): string | undefined {
     ].join(' · ');
 }
 
+function compactCwd(cwd: string): string {
+    const safe = boundedLine(cwd, FALLBACK_MAX_BYTES);
+    const home = homedir();
+    if (safe === home) return '~';
+    return safe.startsWith(`${home}${sep}`) ? `~${safe.slice(home.length)}` : safe;
+}
+
 function addSection(
     lines: string[],
     label: string,
     content: readonly string[],
     theme: Theme,
-    color: 'toolOutput' | 'muted' | 'dim' | 'error' = 'toolOutput'
+    color?: ThemeColor
 ): void {
     if (content.length === 0) return;
-    if (lines.length > 1) lines.push('');
+    if (lines.length > 0 && lines.at(-1) !== '') lines.push('');
     lines.push(`  ${theme.fg('accent', theme.bold(label))}`);
-    for (const line of content) lines.push(`    ${theme.fg(color, line)}`);
+    for (const line of content) {
+        lines.push(`    ${color ? theme.fg(color, line) : line}`);
+    }
 }
 
 function expandedSnapshotLines(
@@ -272,32 +388,35 @@ function expandedSnapshotLines(
     result: AgentToolResult<unknown>,
     theme: Theme
 ): string[] {
-    const lines = [`  ${theme.fg(stateColor(snapshot.state), stateLabel(snapshot.state))}`];
+    const lines = [
+        `  ${theme.fg(stateColor(snapshot.state), `${stateMarker(snapshot.state)} ${stateLabel(snapshot.state)}`)}`,
+    ];
 
-    addSection(
-        lines,
-        'Task',
-        boundedMultilineLines(snapshot.task, EXPANDED_TEXT_MAX_BYTES, TASK_MAX_LINES),
-        theme
-    );
-    addSection(
-        lines,
-        'Runtime',
-        [
-            `cwd: ${boundedLine(snapshot.cwd, FALLBACK_MAX_BYTES)}`,
-            `model: ${boundedLine(`${snapshot.model.provider}/${snapshot.model.id}`, FALLBACK_MAX_BYTES)} · thinking ${snapshot.thinkingLevel}`,
-        ],
-        theme,
-        'muted'
-    );
+    if (snapshot.task.trim()) {
+        addSection(
+            lines,
+            'Task',
+            boundedMultilineLines(snapshot.task, EXPANDED_TEXT_MAX_BYTES, TASK_MAX_LINES),
+            theme,
+            'toolOutput'
+        );
+    }
+
+    const runtime = [
+        snapshot.cwd ? `cwd: ${compactCwd(snapshot.cwd)}` : undefined,
+        snapshot.model.provider && snapshot.model.id
+            ? `model: ${boundedLine(`${snapshot.model.provider}/${snapshot.model.id}`, FALLBACK_MAX_BYTES)} · thinking ${boundedLine(snapshot.thinkingLevel, 128)}`
+            : undefined,
+    ].filter((line): line is string => !!line);
+    addSection(lines, 'Runtime', runtime, theme, 'muted');
 
     const tools = [
-        ...(snapshot.currentTool ? [activityLine(snapshot.currentTool, true)] : []),
+        ...(snapshot.currentTool ? [activityLine(snapshot.currentTool, true, theme)] : []),
         ...snapshot.recentToolCalls
             .filter((tool) => tool.id !== snapshot.currentTool?.id)
-            .map((tool) => activityLine(tool, false)),
+            .map((tool) => activityLine(tool, false, theme)),
     ];
-    addSection(lines, 'Activity', tools, theme, 'muted');
+    addSection(lines, 'Activity', tools, theme);
 
     if (snapshot.thinkingTail.trim()) {
         addSection(
@@ -320,25 +439,20 @@ function expandedSnapshotLines(
     if (response.trim()) {
         addSection(
             lines,
-            snapshot.state === 'completed' ? 'Final output' : 'Response tail',
+            'Response tail',
             boundedMultilineLines(response, EXPANDED_TEXT_MAX_BYTES, TAIL_MAX_LINES, true),
-            theme
+            theme,
+            'toolOutput'
         );
     }
 
-    const contextAndTurn = [
-        formatContext(snapshot),
-        snapshot.turn > 0 ? `turn ${snapshot.turn}` : undefined,
-    ]
+    const contextAndTurn = [formatContext(snapshot, true), `turn ${snapshot.turn}`]
         .filter((part): part is string => !!part)
         .join(' · ');
     addSection(
         lines,
         'Stats',
-        [
-            contextAndTurn || undefined,
-            usageLine(snapshot) ?? formatElapsed(snapshot.elapsedMs),
-        ].filter((part): part is string => !!part),
+        [contextAndTurn, usageLine(snapshot) ?? formatElapsed(snapshot.elapsedMs)],
         theme,
         'dim'
     );
@@ -355,35 +469,63 @@ function expandedSnapshotLines(
     return lines;
 }
 
+export interface SubagentResultRenderState {
+    readonly isPartial?: boolean;
+    readonly isError?: boolean;
+}
+
+function fallbackLines(
+    result: AgentToolResult<unknown>,
+    expanded: boolean,
+    theme: Theme,
+    renderState: SubagentResultRenderState
+): string[] {
+    const fallback = result.content.find((item) => item.type === 'text');
+    const text = fallback?.type === 'text' ? fallback.text : '';
+    const color = renderState.isError ? 'error' : renderState.isPartial ? 'warning' : 'toolOutput';
+    if (!text) return [theme.fg(color, 'Subagent details unavailable')];
+    if (!expanded) return [theme.fg(color, boundedLine(text, FALLBACK_MAX_BYTES))];
+    return boundedMultilineLines(text, FALLBACK_MAX_BYTES, TASK_MAX_LINES).map((line) =>
+        theme.fg(color, line)
+    );
+}
+
 export function renderSubagentResult(
     result: AgentToolResult<unknown>,
     expanded: boolean,
-    theme: Theme
+    theme: Theme,
+    renderState: SubagentResultRenderState = {}
 ): Component {
-    return new WidthSafeLines(() => {
+    return new WidthSafeLines((width) => {
         if (!isSubagentRunSnapshot(result.details)) {
-            const fallback = result.content.find((item) => item.type === 'text');
-            return [
-                theme.fg(
-                    'toolOutput',
-                    truncateUtf8Head(
-                        fallback?.type === 'text' ? singleLine(fallback.text) : '',
-                        FALLBACK_MAX_BYTES
-                    )
-                ),
-            ];
+            return fallbackLines(result, expanded, theme, renderState);
         }
 
         const snapshot = result.details;
         if (expanded) return expandedSnapshotLines(snapshot, result, theme);
 
-        const label = stateLabel(snapshot.state);
-        const activity = toolSummary(snapshot);
-        const firstLine = [label, activity].filter(Boolean).join(' · ');
+        const activity = collapsedActivity(snapshot);
+        const selected = selectedTool(snapshot);
+        const marker =
+            snapshot.state === 'running' && selected && activity
+                ? snapshot.currentTool?.id === selected.id && selected.state === 'running'
+                    ? '→'
+                    : selected.state === 'completed'
+                      ? '✓'
+                      : '✗'
+                : stateMarker(snapshot.state);
+        const firstLineText = [activity, stateLabel(snapshot.state)].filter(Boolean).join(' · ');
         const lines = [
-            `  ${theme.fg(stateColor(snapshot.state), firstLine)}`,
-            `  ${theme.fg('dim', snapshotStats(snapshot))} · ${keyHint('app.tools.expand', 'to expand')}`,
+            `  ${theme.fg(stateColor(snapshot.state), marker)} ${theme.fg('muted', firstLineText)}`,
         ];
+
+        const stats = snapshotStats(snapshot);
+        const styledStats = `  ${theme.fg('dim', stats)}`;
+        const expandKey = keyText('app.tools.expand');
+        const hint = expandKey ? keyHint('app.tools.expand', 'to expand') : '';
+        const withHint = hint ? `${styledStats}${theme.fg('dim', ' · ')}${hint}` : styledStats;
+        lines.push(hint && visibleWidth(withHint) <= width ? withHint : styledStats);
+
         if ((snapshot.state === 'failed' || snapshot.state === 'cancelled') && snapshot.error) {
             lines.push(`  ${theme.fg('error', boundedLine(snapshot.error, FALLBACK_MAX_BYTES))}`);
         }
@@ -400,10 +542,11 @@ export function renderSubagentWidget(
         const activity = snapshot.currentTool?.name ?? stateLabel(snapshot.state);
         const queuedSuffix =
             queuedCount > (snapshot.state === 'queued' ? 1 : 0) ? ` · ${queuedCount} queued` : '';
+        const context = formatContext(snapshot, false);
         const line = [
             theme.fg('accent', 'subagent'),
-            theme.fg(stateColor(snapshot.state), activity),
-            formatContext(snapshot) ? theme.fg('muted', formatContext(snapshot)!) : undefined,
+            theme.fg(stateColor(snapshot.state), boundedLine(activity, 128)),
+            context ? theme.fg('muted', context) : undefined,
             theme.fg('dim', formatElapsed(snapshot.elapsedMs)),
         ]
             .filter((part): part is string => !!part)

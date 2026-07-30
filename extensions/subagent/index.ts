@@ -136,8 +136,11 @@ export default function subagentExtension(pi: ExtensionAPI): void {
             return renderSubagentCall(args, theme);
         },
 
-        renderResult(result, { expanded }, theme) {
-            return renderSubagentResult(result, expanded, theme);
+        renderResult(result, { expanded, isPartial }, theme, context) {
+            return renderSubagentResult(result, expanded, theme, {
+                isPartial,
+                isError: context.isError,
+            });
         },
     });
 

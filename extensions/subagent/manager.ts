@@ -77,10 +77,11 @@ function isTerminal(state: SubagentRunState): boolean {
 }
 
 function sanitizeText(text: string, preserveNewlines = false): string {
-    const withoutControls = text
+    const normalized = preserveNewlines ? text.replace(/\r\n?/gu, '\n') : text;
+    const withoutControls = normalized
         .replace(/\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)?)/gu, '')
         .replace(
-            preserveNewlines ? /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/gu : /[\x00-\x1F\x7F-\x9F]/gu,
+            preserveNewlines ? /[\x00-\x09\x0B-\x1F\x7F-\x9F]/gu : /[\x00-\x1F\x7F-\x9F]/gu,
             ' '
         );
     return preserveNewlines ? withoutControls : withoutControls.replace(/\s+/gu, ' ').trim();
@@ -100,10 +101,11 @@ function summarizeKnownTool(toolName: string, args: Record<string, unknown>): st
             if (!path) return undefined;
             const offset = typeof args.offset === 'number' ? args.offset : undefined;
             const limit = typeof args.limit === 'number' ? args.limit : undefined;
+            const start = offset ?? (limit === undefined ? undefined : 1);
             const range =
-                offset === undefined
+                start === undefined
                     ? ''
-                    : `:${offset}${limit === undefined ? '' : `-${offset + limit - 1}`}`;
+                    : `:${start}${limit === undefined ? '' : `-${start + limit - 1}`}`;
             return `${path}${range}`;
         }
         case 'bash':
