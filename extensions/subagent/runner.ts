@@ -217,7 +217,20 @@ export class SubagentRunner {
             cwd: options.cwd,
             agentDir,
             settingsManager,
-            noExtensions: true,
+            extensionFactories: [
+                {
+                    name: 'subagent-nesting-gate',
+                    factory(pi) {
+                        pi.on('tool_call', (event) => {
+                            if (event.toolName !== 'subagent') return;
+                            return {
+                                block: true,
+                                reason: 'Nested subagents are disabled',
+                            };
+                        });
+                    },
+                },
+            ],
             appendSystemPrompt: [getSubagentSystemPrompt()],
             // DefaultResourceLoader always discovers AGENTS.md files. Keep trusted
             // global context while excluding project-controlled context when the
@@ -289,7 +302,7 @@ export class SubagentRunner {
             model: options.model,
             thinkingLevel: options.thinkingLevel,
             modelRuntime,
-            tools: ['read', 'bash', 'edit', 'write'],
+            excludeTools: ['subagent'],
             resourceLoader,
             settingsManager,
             sessionManager: SessionManager.inMemory(options.cwd),
