@@ -15,21 +15,14 @@ import {
     ModelRuntime,
     SessionManager,
     type SessionEntry,
-    type SessionStats,
     SettingsManager,
 } from '@earendil-works/pi-coding-agent';
 import { getSubagentSystemPrompt } from './prompts.ts';
-import {
-    addUsage,
-    emptyUsage,
-    truncateModelOutput,
-    truncateUtf8Tail,
-    UPDATE_TEXT_MAX_BYTES,
-} from './run-utils.ts';
-import type { SubagentDetails, SubagentRunOptions, SubagentRunResult } from './types.ts';
+import { addUsage, emptyUsage, truncateModelOutput } from './run-utils.ts';
+import { observeSubagentSession } from './session-observer.ts';
+import type { SubagentRunnerOptions, SubagentRunnerResult, SubagentRunnerEvent } from './types.ts';
 
 const SHUTDOWN_GRACE_MS = 3_000;
-const TEXT_UPDATE_THROTTLE_MS = 100;
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -145,13 +138,13 @@ export class SubagentRunner {
     private serialTail: Promise<void> = Promise.resolve();
     private readonly activeSessions = new Set<AgentSession>();
     private readonly activeCleanups = new Set<Promise<void>>();
-    private readonly runs = new Set<Promise<SubagentRunResult>>();
+    private readonly runs = new Set<Promise<SubagentRunnerResult>>();
     private modelRuntimePromise: Promise<ModelRuntime> | undefined;
     private readonly shutdownController = new AbortController();
     private shutdownPromise: Promise<void> | undefined;
     private shuttingDown = false;
 
-    run(options: SubagentRunOptions): Promise<SubagentRunResult> {
+    run(options: SubagentRunnerOptions): Promise<SubagentRunnerResult> {
         if (options.signal?.aborted) return Promise.reject(createAbortError());
 
         const run = this.runSerial(options);
@@ -193,7 +186,7 @@ export class SubagentRunner {
         }));
     }
 
-    private async runSerial(options: SubagentRunOptions): Promise<SubagentRunResult> {
+    private async runSerial(options: SubagentRunnerOptions): Promise<SubagentRunnerResult> {
         let release!: () => void;
         const gate = new Promise<void>((resolve) => {
             release = resolve;
@@ -228,11 +221,14 @@ export class SubagentRunner {
     }
 
     private async runOne(
-        options: SubagentRunOptions,
+        options: SubagentRunnerOptions,
         signal: AbortSignal,
         holdGateUntil: (cleanup: Promise<void>) => void
-    ): Promise<SubagentRunResult> {
+    ): Promise<SubagentRunnerResult> {
         if (signal.aborted) throw createAbortError();
+
+        const emit = (event: SubagentRunnerEvent): void => options.onEvent?.(event);
+        emit({ type: 'setup_started' });
 
         const agentDir = getAgentDir();
         const settingsManager = SettingsManager.create(options.cwd, agentDir, {
@@ -378,6 +374,7 @@ export class SubagentRunner {
         }
 
         this.activeSessions.add(session);
+        emit({ type: 'session_ready', sessionId: session.sessionId });
         let finishCleanup!: () => void;
         const cleanupDone = new Promise<void>((resolveCleanup) => {
             finishCleanup = resolveCleanup;
@@ -385,55 +382,8 @@ export class SubagentRunner {
         this.activeCleanups.add(cleanupDone);
         void cleanupDone.then(() => this.activeCleanups.delete(cleanupDone));
 
-        let streamedText = '';
         let lastStopReason: string | undefined;
         let lastErrorMessage: string | undefined;
-        let stats: SessionStats | undefined;
-
-        const makeDetails = (): SubagentDetails => ({
-            id: session.sessionId,
-            task: options.task,
-            cwd: options.cwd,
-            model: { provider: options.model.provider, id: options.model.id },
-            thinkingLevel: options.thinkingLevel,
-            stats,
-        });
-        const emitUpdate = (status: string): void => {
-            options.onUpdate?.(makeDetails(), status);
-        };
-        let updateTimer: NodeJS.Timeout | undefined;
-        let updateDirty = false;
-        let lastUpdateAt = 0;
-        const clearUpdateTimer = (): void => {
-            if (!updateTimer) return;
-            clearTimeout(updateTimer);
-            updateTimer = undefined;
-        };
-        const emitTextUpdate = (): void => {
-            if (!updateDirty) return;
-            updateDirty = false;
-            lastUpdateAt = Date.now();
-            emitUpdate(streamedText || '(subagent responding…)');
-        };
-        const scheduleTextUpdate = (): void => {
-            if (!options.onUpdate) return;
-            updateDirty = true;
-            const delay = TEXT_UPDATE_THROTTLE_MS - (Date.now() - lastUpdateAt);
-            if (delay <= 0) {
-                clearUpdateTimer();
-                emitTextUpdate();
-                return;
-            }
-            updateTimer ??= setTimeout(() => {
-                updateTimer = undefined;
-                emitTextUpdate();
-            }, delay);
-        };
-        const emitToolStatus = (status: string): void => {
-            clearUpdateTimer();
-            updateDirty = false;
-            emitUpdate(status);
-        };
 
         let unsubscribe = (): void => {};
         let abortPromise: Promise<void> | undefined;
@@ -444,8 +394,6 @@ export class SubagentRunner {
         };
         const cleanupSession = async (): Promise<void> => {
             try {
-                clearUpdateTimer();
-                updateDirty = false;
                 signal.removeEventListener('abort', abort);
                 if (abortPromise) await Promise.allSettled([abortPromise]);
                 unsubscribe();
@@ -471,26 +419,9 @@ export class SubagentRunner {
                 throw new Error('Subagent runner is shutting down');
             }
 
-            unsubscribe = session.subscribe((event) => {
-                if (
-                    event.type === 'message_update' &&
-                    event.assistantMessageEvent.type === 'text_delta'
-                ) {
-                    streamedText = truncateUtf8Tail(
-                        streamedText + event.assistantMessageEvent.delta,
-                        UPDATE_TEXT_MAX_BYTES
-                    );
-                    scheduleTextUpdate();
-                } else if (event.type === 'tool_execution_start') {
-                    emitToolStatus(`Running ${event.toolName}…`);
-                } else if (event.type === 'tool_execution_end') {
-                    emitToolStatus(`Finished ${event.toolName}`);
-                }
-
-                if (event.type === 'message_end' && event.message.role === 'assistant') {
-                    lastStopReason = event.message.stopReason;
-                    lastErrorMessage = event.message.errorMessage;
-                }
+            unsubscribe = observeSubagentSession(session, emit, (completion) => {
+                lastStopReason = completion.stopReason;
+                lastErrorMessage = completion.errorMessage;
             });
 
             // SDK sessions do not start the extension lifecycle until the host binds
@@ -526,10 +457,9 @@ export class SubagentRunner {
             const text = session.getLastAssistantText();
             if (!text) throw new Error('Subagent completed without an assistant response');
 
-            stats = session.getSessionStats();
+            emit({ type: 'stats_refreshed', stats: session.getSessionStats() });
             return {
                 text: truncateModelOutput(text),
-                details: makeDetails(),
                 usage: usageFromEntries(session.sessionManager.getEntries()),
             };
         } catch (error) {

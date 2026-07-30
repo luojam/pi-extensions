@@ -2,7 +2,15 @@ import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { SubagentRunner } from './runner.ts';
+import { SubagentManager } from './manager.ts';
+import {
+    conciseSnapshotStatus,
+    renderSubagentCall,
+    renderSubagentResult,
+    renderSubagentWidget,
+} from './render.ts';
+
+const WIDGET_KEY = 'subagent-run';
 
 const SubagentParameters = Type.Object({
     task: Type.String({ description: 'The self-contained task to delegate', minLength: 1 }),
@@ -50,7 +58,29 @@ async function resolveWorkingDirectory(
 }
 
 export default function subagentExtension(pi: ExtensionAPI): void {
-    const runner = new SubagentRunner();
+    const manager = new SubagentManager();
+    let uiGeneration = 0;
+    let unsubscribeWidget: (() => void) | undefined;
+
+    pi.on('session_start', (_event, ctx) => {
+        unsubscribeWidget?.();
+        unsubscribeWidget = undefined;
+        const generation = ++uiGeneration;
+        if (ctx.mode !== 'tui') return;
+
+        unsubscribeWidget = manager.subscribeRelevant(({ snapshot, queuedCount }) => {
+            if (generation !== uiGeneration) return;
+            if (!snapshot) {
+                ctx.ui.setWidget(WIDGET_KEY, undefined);
+                return;
+            }
+            ctx.ui.setWidget(
+                WIDGET_KEY,
+                (_tui, theme) => renderSubagentWidget(snapshot, queuedCount, theme),
+                { placement: 'aboveEditor' }
+            );
+        });
+    });
 
     pi.registerTool({
         name: 'subagent',
@@ -74,8 +104,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 
             const { cwd, inheritsParentTrust } = await resolveWorkingDirectory(params.cwd, ctx);
             const thinkingLevel = ctx.thinkingLevel ?? pi.getThinkingLevel();
-
-            const result = await runner.run({
+            const started = manager.startRun({
                 task,
                 cwd,
                 model: ctx.model,
@@ -83,23 +112,40 @@ export default function subagentExtension(pi: ExtensionAPI): void {
                 thinkingLevel,
                 projectTrusted: ctx.isProjectTrusted() && inheritsParentTrust,
                 signal,
-                onUpdate: (details, status) => {
-                    onUpdate?.({
-                        content: [{ type: 'text', text: status }],
-                        details,
-                    });
-                },
+            });
+            const unsubscribeRun = manager.subscribeRun(started.id, (snapshot) => {
+                onUpdate?.({
+                    content: [{ type: 'text', text: conciseSnapshotStatus(snapshot) }],
+                    details: snapshot,
+                });
             });
 
-            return {
-                content: [{ type: 'text', text: result.text }],
-                details: result.details,
-                usage: result.usage,
-            };
+            try {
+                const result = await started.result;
+                return {
+                    content: [{ type: 'text', text: result.text }],
+                    details: result.details,
+                    usage: result.usage,
+                };
+            } finally {
+                unsubscribeRun();
+            }
+        },
+
+        renderCall(args, theme) {
+            return renderSubagentCall(args, theme);
+        },
+
+        renderResult(result, { expanded }, theme) {
+            return renderSubagentResult(result, expanded, theme);
         },
     });
 
-    pi.on('session_shutdown', async () => {
-        await runner.shutdown();
+    pi.on('session_shutdown', async (_event, ctx) => {
+        ++uiGeneration;
+        unsubscribeWidget?.();
+        unsubscribeWidget = undefined;
+        if (ctx.mode === 'tui') ctx.ui.setWidget(WIDGET_KEY, undefined);
+        await manager.shutdown();
     });
 }
