@@ -231,7 +231,7 @@ function formatContext(snapshot: SubagentRunSnapshot, includeUnknown: boolean): 
                 ? ' (?%)'
                 : ''
             : ` (${Math.round(usage.percent)}%)`;
-    return `context ${tokens}/${formatTokens(usage.contextWindow)}${percent}`;
+    return `${tokens}/${formatTokens(usage.contextWindow)}${percent}`;
 }
 
 function stateLabel(state: SubagentRunState): string {
@@ -390,14 +390,26 @@ export function isSubagentRunSnapshot(value: unknown): value is SubagentRunSnaps
     );
 }
 
+export interface SubagentSharedRenderState {
+    snapshot?: SubagentRunSnapshot;
+}
+
 export function renderSubagentCall(
     args: { task?: unknown },
     theme: Theme,
-    expanded = false
+    expanded = false,
+    renderState: SubagentSharedRenderState = {}
 ): Component {
     return new WidthSafeLines(
         (width) => {
-            const lines = [theme.fg('toolTitle', theme.bold('Subagent'))];
+            const snapshot = renderState.snapshot;
+            const status = snapshot
+                ? theme.fg(
+                      stateColor(snapshot.state),
+                      `${stateMarker(snapshot.state)} ${stateLabel(snapshot.state)}`
+                  )
+                : '';
+            const lines = [theme.fg('toolTitle', theme.bold('Subagent')) + ' · ' + status];
 
             const task = boundedLine(
                 typeof args.task === 'string' ? args.task : '',
@@ -482,9 +494,7 @@ function expandedSnapshotLines(
     result: AgentToolResult<unknown>,
     theme: Theme
 ): string[] {
-    const lines = [
-        `  ${theme.fg(stateColor(snapshot.state), `${stateMarker(snapshot.state)} ${stateLabel(snapshot.state)}`)}`,
-    ];
+    const lines: string[] = [];
 
     if (snapshot.task.trim()) {
         addSection(
@@ -583,9 +593,11 @@ export function renderSubagentResult(
     result: AgentToolResult<unknown>,
     expanded: boolean,
     theme: Theme,
-    renderState: SubagentResultRenderState = {}
+    renderState: SubagentResultRenderState = {},
+    sharedState: SubagentSharedRenderState = {}
 ): Component {
     const snapshot = isSubagentRunSnapshot(result.details) ? result.details : undefined;
+    sharedState.snapshot = snapshot;
 
     return new WidthSafeLines(
         (width) => {
@@ -597,10 +609,7 @@ export function renderSubagentResult(
             const expandKey = keyText('app.tools.expand');
             const hint = expandKey ? keyHint('app.tools.expand', 'to expand') : '';
             const withHint = hint ? `${styledStats}${theme.fg('dim', ' · ')}${hint}` : styledStats;
-            const lines = [
-                `  ${theme.fg(stateColor(snapshot.state), `${stateMarker(snapshot.state)} ${stateLabel(snapshot.state)}`)}`,
-                hint && visibleWidth(withHint) <= width ? withHint : styledStats,
-            ];
+            const lines = [hint && visibleWidth(withHint) <= width ? withHint : styledStats];
 
             if ((snapshot.state === 'failed' || snapshot.state === 'cancelled') && snapshot.error) {
                 lines.push(
@@ -626,8 +635,8 @@ export function renderSubagentWidget(
         const line = [
             theme.fg('accent', 'subagent'),
             theme.fg(stateColor(snapshot.state), boundedLine(activity, 128)),
-            context ? theme.fg('muted', context) : undefined,
             theme.fg('dim', formatElapsed(snapshot.elapsedMs)),
+            context ? theme.fg('muted', context) : undefined,
         ]
             .filter((part): part is string => !!part)
             .join(theme.fg('dim', ' · '));

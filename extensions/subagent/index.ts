@@ -8,6 +8,7 @@ import {
     renderSubagentCall,
     renderSubagentResult,
     renderSubagentWidget,
+    type SubagentSharedRenderState,
 } from './render.ts';
 
 const WIDGET_KEY = 'subagent-run';
@@ -133,14 +134,25 @@ export default function subagentExtension(pi: ExtensionAPI): void {
         },
 
         renderCall(args, theme, context) {
-            return renderSubagentCall(args, theme, context.expanded);
+            return renderSubagentCall(
+                args,
+                theme,
+                context.expanded,
+                context.state as SubagentSharedRenderState
+            );
         },
 
         renderResult(result, { expanded, isPartial }, theme, context) {
-            return renderSubagentResult(result, expanded, theme, {
-                isPartial,
-                isError: context.isError,
-            });
+            return renderSubagentResult(
+                result,
+                expanded,
+                theme,
+                {
+                    isPartial,
+                    isError: context.isError,
+                },
+                context.state as SubagentSharedRenderState
+            );
         },
     });
 
