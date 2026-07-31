@@ -2,31 +2,132 @@ import { homedir } from 'node:os';
 import { sep } from 'node:path';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { keyHint, keyText, type Theme } from '@earendil-works/pi-coding-agent';
-import { truncateToWidth, visibleWidth, type Component } from '@earendil-works/pi-tui';
+import {
+    sliceByColumn,
+    visibleWidth,
+    wrapTextWithAnsi,
+    type Component,
+} from '@earendil-works/pi-tui';
 import { truncateUtf8Head, truncateUtf8Tail } from './run-utils.ts';
 import type { SubagentRunSnapshot, SubagentRunState, SubagentToolCallSnapshot } from './types.ts';
 
 const TASK_SUMMARY_MAX_BYTES = 512;
 const TOOL_SUMMARY_MAX_BYTES = 1_024;
-const COLLAPSED_TAIL_MAX_BYTES = 384;
 const FALLBACK_MAX_BYTES = 2 * 1_024;
 const EXPANDED_TEXT_MAX_BYTES = 8 * 1_024;
 const TASK_MAX_LINES = 8;
 const TAIL_MAX_LINES = 16;
+const COLLAPSED_MAX_COLUMNS = 100;
+const TRUNCATED_TASK_END_PADDING_COLUMNS = 3;
 
 type ThemeColor = 'toolOutput' | 'muted' | 'dim' | 'error';
+
+const SGR_SEQUENCE = /\x1B\[([\d;:]*)m/gu;
+
+/** Close styles active at the end of text without resetting its inherited background. */
+function selectiveStyleTerminators(text: string): string {
+    const activeTerminators = new Set<number>();
+
+    for (const match of text.matchAll(SGR_SEQUENCE)) {
+        const rawParameters = match[1] || '0';
+        const parameters = rawParameters.split(';');
+        for (let index = 0; index < parameters.length; index++) {
+            const parameter = parameters[index] ?? '0';
+            const code = Number(parameter.split(':', 1)[0] || 0);
+
+            if (code === 0) {
+                activeTerminators.clear();
+            } else if (code === 1 || code === 2) {
+                activeTerminators.add(22);
+            } else if (code === 3) {
+                activeTerminators.add(23);
+            } else if (code === 4 || code === 21) {
+                activeTerminators.add(24);
+            } else if (code === 5 || code === 6) {
+                activeTerminators.add(25);
+            } else if (code === 7) {
+                activeTerminators.add(27);
+            } else if (code === 8) {
+                activeTerminators.add(28);
+            } else if (code === 9) {
+                activeTerminators.add(29);
+            } else if (code === 53) {
+                activeTerminators.add(55);
+            } else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
+                activeTerminators.add(39);
+            } else if (code === 38) {
+                activeTerminators.add(39);
+                // Skip semicolon-form indexed/RGB foreground color arguments.
+                if (!parameter.includes(':')) index += parameters[index + 1] === '2' ? 4 : 2;
+            } else if (code === 48) {
+                // Keep the shell-owned background active, but skip its color arguments.
+                if (!parameter.includes(':')) index += parameters[index + 1] === '2' ? 4 : 2;
+            } else if (
+                code === 22 ||
+                code === 23 ||
+                code === 24 ||
+                code === 25 ||
+                code === 27 ||
+                code === 28 ||
+                code === 29 ||
+                code === 39 ||
+                code === 55
+            ) {
+                activeTerminators.delete(code);
+            }
+        }
+    }
+
+    return activeTerminators.size > 0 ? `\x1B[${[...activeTerminators].join(';')}m` : '';
+}
+
+/**
+ * Keep the ellipsis under the truncated text's style, then selectively close that style.
+ * SGR 0/49 must not be used here because the tool shell owns the background.
+ */
+function truncateStyledLine(text: string, maxWidth: number, ellipsis = '…'): string {
+    if (maxWidth <= 0) return '';
+    if (visibleWidth(text) <= maxWidth) return text;
+
+    const ellipsisWidth = visibleWidth(ellipsis);
+    if (ellipsisWidth >= maxWidth) return sliceByColumn(ellipsis, 0, maxWidth, true);
+    const prefix = sliceByColumn(text, 0, maxWidth - ellipsisWidth, true);
+    return prefix + ellipsis + selectiveStyleTerminators(prefix);
+}
 
 /** A stateless component which applies the terminal width after styling. */
 class WidthSafeLines implements Component {
     private readonly getLines: (width: number) => string[];
+    private readonly wrap: boolean;
+    private readonly maxWidth?: number;
 
-    constructor(getLines: (width: number) => string[]) {
+    constructor(
+        getLines: (width: number) => string[],
+        options: { wrap?: boolean; maxWidth?: number } = {}
+    ) {
         this.getLines = getLines;
+        this.wrap = options.wrap ?? false;
+        this.maxWidth = options.maxWidth;
     }
 
     render(width: number): string[] {
         if (width <= 0) return [];
-        return this.getLines(width).map((line) => truncateToWidth(line, width));
+        const contentWidth = Math.min(width, this.maxWidth ?? width);
+        const lines = this.getLines(contentWidth);
+        if (this.wrap) {
+            return lines.flatMap((line) => {
+                const indent = line.match(/^ +/u)?.[0] ?? '';
+                const availableWidth = contentWidth - indent.length;
+                const wrapped =
+                    indent && availableWidth > 0
+                        ? wrapTextWithAnsi(line.slice(indent.length), availableWidth).map(
+                              (content) => indent + content
+                          )
+                        : wrapTextWithAnsi(line, contentWidth);
+                return wrapped.map((content) => truncateStyledLine(content, contentWidth));
+            });
+        }
+        return lines.map((line) => truncateStyledLine(line, contentWidth));
     }
 
     invalidate(): void {
@@ -53,16 +154,6 @@ function safeMultiline(text: string): string {
 
 function boundedLine(text: string, maxBytes: number): string {
     return truncateUtf8Head(sanitizeSingleLine(text), maxBytes);
-}
-
-function boundedTailLine(text: string, maxBytes: number): string {
-    const lines = safeMultiline(text)
-        .split('\n')
-        .map((line) => sanitizeSingleLine(line))
-        .filter(Boolean);
-    const line = lines.at(-1) ?? '';
-    const tail = truncateUtf8Tail(line, maxBytes);
-    return tail === line ? tail : `…${tail}`;
 }
 
 function boundedMultilineLines(
@@ -206,19 +297,8 @@ function toolSummary(snapshot: SubagentRunSnapshot): string | undefined {
     return tool ? formatToolCallSummary(tool) : undefined;
 }
 
-function collapsedActivity(snapshot: SubagentRunSnapshot): string | undefined {
-    const activity = toolSummary(snapshot);
-    if (activity) return activity;
-    const response = boundedTailLine(snapshot.responseTail, COLLAPSED_TAIL_MAX_BYTES);
-    return response ? `response ${response}` : undefined;
-}
-
 function snapshotStats(snapshot: SubagentRunSnapshot): string {
-    return [
-        formatContext(snapshot, false),
-        snapshot.turn > 0 ? `turn ${snapshot.turn}` : undefined,
-        formatElapsed(snapshot.elapsedMs),
-    ]
+    return [formatContext(snapshot, false), formatElapsed(snapshot.elapsedMs)]
         .filter((part): part is string => !!part)
         .join(' · ');
 }
@@ -310,17 +390,34 @@ export function isSubagentRunSnapshot(value: unknown): value is SubagentRunSnaps
     );
 }
 
-export function renderSubagentCall(args: { task?: unknown }, theme: Theme): Component {
-    return new WidthSafeLines(() => {
-        const task = boundedLine(
-            typeof args.task === 'string' ? args.task : '',
-            TASK_SUMMARY_MAX_BYTES
-        );
-        return [
-            theme.fg('toolTitle', theme.bold('Subagent')) +
-                (task ? theme.fg('muted', ` · ${task}`) : ''),
-        ];
-    });
+export function renderSubagentCall(
+    args: { task?: unknown },
+    theme: Theme,
+    expanded = false
+): Component {
+    return new WidthSafeLines(
+        (width) => {
+            const lines = [theme.fg('toolTitle', theme.bold('Subagent'))];
+
+            const task = boundedLine(
+                typeof args.task === 'string' ? args.task : '',
+                TASK_SUMMARY_MAX_BYTES
+            );
+            if (!expanded && task) {
+                const taskLine = `  ${theme.fg('muted', task)}`;
+                lines.push(
+                    visibleWidth(taskLine) > width
+                        ? truncateStyledLine(
+                              taskLine,
+                              Math.max(1, width - TRUNCATED_TASK_END_PADDING_COLUMNS)
+                          )
+                        : taskLine
+                );
+            }
+            return lines;
+        },
+        { maxWidth: COLLAPSED_MAX_COLUMNS }
+    );
 }
 
 function activityLine(tool: SubagentToolCallSnapshot, current: boolean, theme: Theme): string {
@@ -352,12 +449,9 @@ function usageLine(snapshot: SubagentRunSnapshot): string | undefined {
     if (!snapshot.usage) return undefined;
     const usage = snapshot.usage;
     return [
-        `↑${formatTokens(usage.input)}`,
-        `↓${formatTokens(usage.output)}`,
-        `R${formatTokens(usage.cacheRead)}`,
-        `W${formatTokens(usage.cacheWrite)}`,
+        [`↑${formatTokens(usage.input)}`, `↓${formatTokens(usage.output)}`].join(' '),
+        [`R${formatTokens(usage.cacheRead)}`, `W${formatTokens(usage.cacheWrite)}`].join(' '),
         formatCost(usage.cost),
-        formatElapsed(snapshot.elapsedMs),
     ].join(' · ');
 }
 
@@ -427,7 +521,7 @@ function expandedSnapshotLines(
                 EXPANDED_TEXT_MAX_BYTES,
                 TAIL_MAX_LINES,
                 true
-            ),
+            ).filter((line) => line.trim() !== ''),
             theme,
             'dim'
         );
@@ -446,16 +540,11 @@ function expandedSnapshotLines(
         );
     }
 
-    const contextAndTurn = [formatContext(snapshot, true), `turn ${snapshot.turn}`]
+    const contextAndElapsed = [formatContext(snapshot, true), formatElapsed(snapshot.elapsedMs)]
         .filter((part): part is string => !!part)
         .join(' · ');
-    addSection(
-        lines,
-        'Stats',
-        [contextAndTurn, usageLine(snapshot) ?? formatElapsed(snapshot.elapsedMs)],
-        theme,
-        'dim'
-    );
+    const stats = [contextAndElapsed, usageLine(snapshot)].filter((part): part is string => !!part);
+    addSection(lines, 'Stats', stats, theme, 'dim');
 
     if ((snapshot.state === 'failed' || snapshot.state === 'cancelled') && snapshot.error) {
         addSection(
@@ -496,41 +585,32 @@ export function renderSubagentResult(
     theme: Theme,
     renderState: SubagentResultRenderState = {}
 ): Component {
-    return new WidthSafeLines((width) => {
-        if (!isSubagentRunSnapshot(result.details)) {
-            return fallbackLines(result, expanded, theme, renderState);
-        }
+    const snapshot = isSubagentRunSnapshot(result.details) ? result.details : undefined;
 
-        const snapshot = result.details;
-        if (expanded) return expandedSnapshotLines(snapshot, result, theme);
+    return new WidthSafeLines(
+        (width) => {
+            if (!snapshot) return fallbackLines(result, expanded, theme, renderState);
+            if (expanded) return expandedSnapshotLines(snapshot, result, theme);
 
-        const activity = collapsedActivity(snapshot);
-        const selected = selectedTool(snapshot);
-        const marker =
-            snapshot.state === 'running' && selected && activity
-                ? snapshot.currentTool?.id === selected.id && selected.state === 'running'
-                    ? '→'
-                    : selected.state === 'completed'
-                      ? '✓'
-                      : '✗'
-                : stateMarker(snapshot.state);
-        const firstLineText = [activity, stateLabel(snapshot.state)].filter(Boolean).join(' · ');
-        const lines = [
-            `  ${theme.fg(stateColor(snapshot.state), marker)} ${theme.fg('muted', firstLineText)}`,
-        ];
+            const stats = snapshotStats(snapshot);
+            const styledStats = `  ${theme.fg('dim', stats)}`;
+            const expandKey = keyText('app.tools.expand');
+            const hint = expandKey ? keyHint('app.tools.expand', 'to expand') : '';
+            const withHint = hint ? `${styledStats}${theme.fg('dim', ' · ')}${hint}` : styledStats;
+            const lines = [
+                `  ${theme.fg(stateColor(snapshot.state), `${stateMarker(snapshot.state)} ${stateLabel(snapshot.state)}`)}`,
+                hint && visibleWidth(withHint) <= width ? withHint : styledStats,
+            ];
 
-        const stats = snapshotStats(snapshot);
-        const styledStats = `  ${theme.fg('dim', stats)}`;
-        const expandKey = keyText('app.tools.expand');
-        const hint = expandKey ? keyHint('app.tools.expand', 'to expand') : '';
-        const withHint = hint ? `${styledStats}${theme.fg('dim', ' · ')}${hint}` : styledStats;
-        lines.push(hint && visibleWidth(withHint) <= width ? withHint : styledStats);
-
-        if ((snapshot.state === 'failed' || snapshot.state === 'cancelled') && snapshot.error) {
-            lines.push(`  ${theme.fg('error', boundedLine(snapshot.error, FALLBACK_MAX_BYTES))}`);
-        }
-        return lines;
-    });
+            if ((snapshot.state === 'failed' || snapshot.state === 'cancelled') && snapshot.error) {
+                lines.push(
+                    `  ${theme.fg('error', boundedLine(snapshot.error, FALLBACK_MAX_BYTES))}`
+                );
+            }
+            return lines;
+        },
+        expanded ? { wrap: true } : { maxWidth: COLLAPSED_MAX_COLUMNS }
+    );
 }
 
 export function renderSubagentWidget(
