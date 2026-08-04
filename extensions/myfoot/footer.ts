@@ -18,6 +18,7 @@ interface RenderFooterOptions {
     ctx: ExtensionContext;
     pi: ExtensionAPI;
     usageLimit: UsageLimit;
+    elapsedMs: number;
 }
 
 export function renderFooter({
@@ -27,10 +28,16 @@ export function renderFooter({
     ctx,
     pi,
     usageLimit,
+    elapsedMs,
 }: RenderFooterOptions): string[] {
     const contentWidth = Math.max(0, width - 6);
     const lines = [
-        frameLine(renderHeader(contentWidth, theme, footerData, ctx, pi), width, theme, true),
+        frameLine(
+            renderHeader(contentWidth, theme, footerData, ctx, pi, elapsedMs),
+            width,
+            theme,
+            true
+        ),
         frameLine(renderStats(contentWidth, theme, ctx, usageLimit), width, theme, false),
     ];
 
@@ -49,7 +56,8 @@ function renderHeader(
     theme: Theme,
     footerData: ReadonlyFooterDataProvider,
     ctx: ExtensionContext,
-    pi: ExtensionAPI
+    pi: ExtensionAPI,
+    elapsedMs: number
 ): string {
     const modelName = ctx.model?.id ?? 'no-model';
     const thinking = ctx.model?.reasoning ? pi.getThinkingLevel() : undefined;
@@ -58,10 +66,12 @@ function renderHeader(
               thinking === 'off' ? 'thinking off' : thinking
           )}`
         : modelName;
+    const elapsed = formatElapsed(elapsedMs);
+    const elapsedAndModel = `${elapsed} ─ ${modelAndThinking}`;
     let modelDisplay =
         footerData.getAvailableProviderCount() > 1 && ctx.model
-            ? `(${ctx.model.provider}) ${modelAndThinking}`
-            : modelAndThinking;
+            ? `${elapsed} ─ (${ctx.model.provider}) ${modelAndThinking}`
+            : elapsedAndModel;
 
     const cwd = formatCwd(ctx.sessionManager.getCwd());
     let cwdDisplay = theme.fg('dim', cwd);
@@ -73,7 +83,7 @@ function renderHeader(
     if (sessionName) cwdDisplay += theme.fg('dim', ` ─ ${sessionName}`);
 
     if (visibleWidth(cwdDisplay) + 2 + visibleWidth(modelDisplay) > width && ctx.model) {
-        modelDisplay = modelAndThinking;
+        modelDisplay = elapsedAndModel;
     }
 
     return alignContent(cwdDisplay, modelDisplay, width, theme);
@@ -163,6 +173,21 @@ function frameLine(content: string, width: number, theme: Theme, top: boolean): 
     const leftBorder = top ? '╭─ ' : '╰─ ';
     const rightBorder = top ? ' ─╮' : ' ─╯';
     return theme.fg('dim', leftBorder) + content + theme.fg('dim', fill + rightBorder);
+}
+
+function formatElapsed(durationMs: number): string {
+    const totalSeconds = Math.max(0, Math.floor(durationMs / 1_000));
+    const seconds = totalSeconds % 60;
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    const minutes = totalMinutes % 60;
+    const totalHours = Math.floor(totalMinutes / 60);
+    const hours = totalHours % 24;
+    const days = Math.floor(totalHours / 24);
+
+    if (days) return `${days}d ${hours}h ${minutes}m ${seconds}s`;
+    if (totalHours) return `${totalHours}h ${minutes}m ${seconds}s`;
+    if (totalMinutes) return `${totalMinutes}m ${seconds}s`;
+    return `${seconds}s`;
 }
 
 function formatTokens(count: number): string {

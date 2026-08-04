@@ -2,13 +2,17 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { fetchUsageLimit, type UsageLimit } from './codex-usage.ts';
 import { renderFooter } from './footer.ts';
 
-const REFRESH_INTERVAL_MS = 5 * 60_000;
+const USAGE_REFRESH_INTERVAL_MS = 5 * 60_000;
+const ELAPSED_REFRESH_INTERVAL_MS = 1_000;
 
 export default function contextFooter(pi: ExtensionAPI) {
     let usageLimit: UsageLimit = { kind: 'message', text: 'Codex usage: loading…' };
     let requestFooterRender = () => {};
-    let refreshTimer: ReturnType<typeof setInterval> | undefined;
+    let usageRefreshTimer: ReturnType<typeof setInterval> | undefined;
+    let elapsedRefreshTimer: ReturnType<typeof setInterval> | undefined;
     let refreshController: AbortController | undefined;
+    let elapsedMs = 0;
+    let agentStartedAt: number | undefined;
     let tuiSessionActive = false;
     let latestRefresh = 0;
 
@@ -23,9 +27,20 @@ export default function contextFooter(pi: ExtensionAPI) {
         requestFooterRender();
     };
 
+    const getElapsedMs = () =>
+        agentStartedAt === undefined ? elapsedMs : Math.max(0, performance.now() - agentStartedAt);
+
+    const stopElapsedRefresh = () => {
+        if (elapsedRefreshTimer) clearInterval(elapsedRefreshTimer);
+        elapsedRefreshTimer = undefined;
+    };
+
     pi.on('session_start', (_event, ctx) => {
-        if (refreshTimer) clearInterval(refreshTimer);
-        refreshTimer = undefined;
+        if (usageRefreshTimer) clearInterval(usageRefreshTimer);
+        usageRefreshTimer = undefined;
+        stopElapsedRefresh();
+        elapsedMs = 0;
+        agentStartedAt = undefined;
         refreshController?.abort();
         refreshController = undefined;
         tuiSessionActive = ctx.mode === 'tui';
@@ -40,22 +55,50 @@ export default function contextFooter(pi: ExtensionAPI) {
                 dispose: unsubscribe,
                 invalidate() {},
                 render: (width: number) =>
-                    renderFooter({ width, theme, footerData, ctx, pi, usageLimit }),
+                    renderFooter({
+                        width,
+                        theme,
+                        footerData,
+                        ctx,
+                        pi,
+                        usageLimit,
+                        elapsedMs: getElapsedMs(),
+                    }),
             };
         });
 
         void refreshUsageLimit();
-        refreshTimer = setInterval(() => void refreshUsageLimit(), REFRESH_INTERVAL_MS);
+        usageRefreshTimer = setInterval(() => void refreshUsageLimit(), USAGE_REFRESH_INTERVAL_MS);
     });
 
-    pi.on('agent_settled', () => {
-        if (tuiSessionActive) void refreshUsageLimit();
+    pi.on('agent_start', () => {
+        if (!tuiSessionActive || agentStartedAt !== undefined) return;
+
+        elapsedMs = 0;
+        agentStartedAt = performance.now();
+        elapsedRefreshTimer = setInterval(() => requestFooterRender(), ELAPSED_REFRESH_INTERVAL_MS);
+        requestFooterRender();
+    });
+
+    pi.on('agent_settled', (_event, ctx) => {
+        if (!tuiSessionActive || !ctx.isIdle()) return;
+
+        if (agentStartedAt !== undefined) {
+            elapsedMs = Math.max(0, performance.now() - agentStartedAt);
+            agentStartedAt = undefined;
+            stopElapsedRefresh();
+            requestFooterRender();
+        }
+
+        void refreshUsageLimit();
     });
 
     pi.on('session_shutdown', () => {
         tuiSessionActive = false;
-        if (refreshTimer) clearInterval(refreshTimer);
-        refreshTimer = undefined;
+        if (usageRefreshTimer) clearInterval(usageRefreshTimer);
+        usageRefreshTimer = undefined;
+        stopElapsedRefresh();
+        agentStartedAt = undefined;
         refreshController?.abort();
         refreshController = undefined;
         latestRefresh++;
