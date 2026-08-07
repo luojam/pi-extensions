@@ -1,3 +1,4 @@
 # π Pi extensions
 
-myfoot is a pi extension with codex usage stats and nicer footer.
+- **myfoot** — Custom footer with session, context, and Codex usage stats.
+- **myhead** — Custom startup header with pi agent logo and keybinding hints.

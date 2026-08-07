@@ -9,17 +9,19 @@
         "@earendil-works/pi-tui": "*"
     },
     "devDependencies": {
+        "@biomejs/biome": "2.5.7",
         "@earendil-works/pi-agent-core": "0.83.0",
         "@earendil-works/pi-ai": "0.83.0",
         "@earendil-works/pi-coding-agent": "0.83.0",
         "@earendil-works/pi-tui": "0.83.0",
         "@types/node": "^24",
-        "prettier": "^3.9.6",
         "typescript": "^7.0.2"
     },
     "scripts": {
         "typecheck": "tsc --project tsconfig.json",
-        "format": "prettier --write .",
-        "format:check": "prettier --check ."
+        "check": "biome check .",
+        "check:write": "biome check --write .",
+        "format": "biome format .",
+        "format:write": "biome format --write ."
     }
 }
