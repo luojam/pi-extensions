@@ -1,10 +1,10 @@
 import {
+    type ExtensionAPI,
     keyHint,
     keyText,
     rawKeyHint,
-    VERSION,
-    type ExtensionAPI,
     type Theme,
+    VERSION,
 } from '@earendil-works/pi-coding-agent';
 import { Text, truncateToWidth } from '@earendil-works/pi-tui';
 
@@ -16,9 +16,6 @@ const LOGO = [
     '  ██    ██  ',
     '            ',
 ];
-
-const WHITE_ON_BLACK = '\x1b[97;40m';
-const RESET = '\x1b[0m';
 
 class MyHead {
     private expanded = false;
@@ -38,9 +35,7 @@ class MyHead {
     render(width: number): string[] {
         if (width <= 0) return [];
 
-        const logo = LOGO.map((line) =>
-            truncateToWidth(`${WHITE_ON_BLACK}${line}${RESET}`, width, '')
-        );
+        const logo = LOGO.map((line) => truncateToWidth(this.theme.fg('text', line), width, ''));
 
         return [...logo, '', ...this.info.render(width)];
     }
@@ -51,7 +46,7 @@ class MyHead {
     }
 
     private updateInfo(): void {
-        const { theme } = this;
+        const theme = this.theme;
         const logo = theme.bold(theme.fg('accent', 'pi')) + theme.fg('dim', ` v${VERSION}`);
         const hint = (keybinding: Parameters<typeof keyHint>[0], description: string) =>
             keyHint(keybinding, description);
