@@ -2,9 +2,16 @@ import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { discoverSessionFiles } from '../session-discovery.ts';
-import { extractSessionEntries, parseSessionFile, scanSessionFiles } from '../session-parser.ts';
-import { deduplicateUsageEvents, reconcileUsageEvents } from '../subagent-reconciliation.ts';
+import { discoverSessionFiles } from '../../extensions/token-usage/session-discovery.ts';
+import {
+    extractSessionEntries,
+    parseSessionFile,
+    scanSessionFiles,
+} from '../../extensions/token-usage/session-parser.ts';
+import {
+    deduplicateUsageEvents,
+    reconcileUsageEvents,
+} from '../../extensions/token-usage/subagent-reconciliation.ts';
 
 const temporaryDirectories: string[] = [];
 

@@ -5,8 +5,12 @@ import {
     recordedCostUsdFromUsage,
     subagentShare,
     tokenComponentsFromUsage,
-} from '../accounting.ts';
-import type { TokenComponents, TokenUsageSummary, UsageEvent } from '../types.ts';
+} from '../../extensions/token-usage/accounting.ts';
+import type {
+    TokenComponents,
+    TokenUsageSummary,
+    UsageEvent,
+} from '../../extensions/token-usage/types.ts';
 
 const components = (input: number): TokenComponents => ({
     input,

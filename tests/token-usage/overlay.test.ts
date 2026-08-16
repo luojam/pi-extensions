@@ -1,11 +1,15 @@
 import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui';
 import { describe, expect, it, vi } from 'vitest';
-import { formatCompactCount, formatTokenShare, formatUsdCost } from '../format.ts';
+import {
+    formatCompactCount,
+    formatTokenShare,
+    formatUsdCost,
+} from '../../extensions/token-usage/format.ts';
 import {
     TokenReportOverlay,
     type TokenReportOverlayKeybindings,
     type TokenReportOverlayTheme,
-} from '../overlay.ts';
+} from '../../extensions/token-usage/overlay.ts';
 import { createSampleTokenReportProvider } from './sample-report-provider.ts';
 
 const theme: TokenReportOverlayTheme = {

@@ -2,9 +2,9 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createTokenReportProvider } from '../provider.ts';
-import { createSessionReportProvider } from '../session-report-provider.ts';
-import type { TokenUsageSummary } from '../types.ts';
+import { createTokenReportProvider } from '../../extensions/token-usage/provider.ts';
+import { createSessionReportProvider } from '../../extensions/token-usage/session-report-provider.ts';
+import type { TokenUsageSummary } from '../../extensions/token-usage/types.ts';
 
 const temporaryDirectories: string[] = [];
 

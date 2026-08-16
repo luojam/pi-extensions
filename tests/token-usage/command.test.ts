@@ -1,8 +1,11 @@
 import type { ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import type { Component } from '@earendil-works/pi-tui';
 import { describe, expect, it, vi } from 'vitest';
-import { createTokensHandler } from '../command.ts';
-import type { TokenReportProvider, TokenReportRequest } from '../provider.ts';
+import { createTokensHandler } from '../../extensions/token-usage/command.ts';
+import type {
+    TokenReportProvider,
+    TokenReportRequest,
+} from '../../extensions/token-usage/provider.ts';
 import { createSampleTokenReportProvider } from './sample-report-provider.ts';
 
 const report = await createSampleTokenReportProvider().load();
