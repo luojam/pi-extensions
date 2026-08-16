@@ -1,11 +1,6 @@
 import type { KeybindingsManager, Theme } from '@earendil-works/pi-coding-agent';
-import {
-    matchesKey,
-    stripTerminalSequences,
-    truncateToWidth,
-    visibleWidth,
-    wrapTextWithAnsi,
-} from '@earendil-works/pi-tui';
+import { matchesKey, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
+import { processedTokens, subagentShare } from './accounting.ts';
 import { formatCompactCount, formatTokenShare, formatUsdCost } from './format.ts';
 import type { TokenReport, TokenUsageSummary } from './types.ts';
 
@@ -105,7 +100,6 @@ export class TokenReportOverlay {
         // The first empty row provides padding below the top border.
         content.push('');
         content.push(this.theme.bold(this.theme.fg('accent', 'Historical token usage')));
-        content.push(this.renderSource(contentWidth));
 
         content.push('');
         content.push(this.renderComponentHeader());
@@ -116,9 +110,6 @@ export class TokenReportOverlay {
         for (const [label, key] of PERIODS) {
             content.push(this.renderPeriod(label, this.report.periods[key]));
         }
-
-        content.push('');
-        content.push(...this.renderDisclaimer(contentWidth));
 
         content.push('');
         content.push(this.theme.fg('dim', this.closeHint()));
@@ -152,18 +143,6 @@ export class TokenReportOverlay {
         );
     }
 
-    private renderSource(contentWidth: number): string {
-        const prefix = this.report.source.kind === 'sample' ? 'SAMPLE DATA' : 'Source';
-        const label = stripTerminalSequences(this.report.source.label).replace(/\s+/g, ' ').trim();
-        const raw = truncateToWidth(`${prefix} — ${label}`, contentWidth, '…');
-        const remainder = raw.slice(prefix.length);
-        const styledPrefix =
-            this.report.source.kind === 'sample'
-                ? this.theme.bold(this.theme.fg('warning', prefix))
-                : this.theme.fg('muted', prefix);
-        return `${styledPrefix}${this.theme.fg('muted', remainder)}`;
-    }
-
     private renderPeriodHeader(): string {
         const widths = this.periodColumnWidths();
         return [
@@ -178,9 +157,9 @@ export class TokenReportOverlay {
         const widths = this.periodColumnWidths();
         return [
             label.padEnd(widths.label),
-            formatCompactCount(summary.processed).padStart(widths.tokens),
-            formatUsdCost(summary.knownCostUsd).padStart(widths.cost),
-            formatTokenShare(summary.subagentShare).padStart(widths.subagents),
+            formatCompactCount(processedTokens(summary)).padStart(widths.tokens),
+            formatUsdCost(summary.recordedCostUsd).padStart(widths.cost),
+            formatTokenShare(subagentShare(summary)).padStart(widths.subagents),
         ].join(COLUMN_GAP);
     }
 
@@ -195,15 +174,15 @@ export class TokenReportOverlay {
             label: Math.max('Period'.length, ...PERIODS.map(([label]) => label.length)),
             tokens: Math.max(
                 'Tokens'.length,
-                ...summaries.map((summary) => formatCompactCount(summary.processed).length)
+                ...summaries.map((summary) => formatCompactCount(processedTokens(summary)).length)
             ),
             cost: Math.max(
                 'Cost'.length,
-                ...summaries.map((summary) => formatUsdCost(summary.knownCostUsd).length)
+                ...summaries.map((summary) => formatUsdCost(summary.recordedCostUsd).length)
             ),
             subagents: Math.max(
                 'Subagents'.length,
-                ...summaries.map((summary) => formatTokenShare(summary.subagentShare).length)
+                ...summaries.map((summary) => formatTokenShare(subagentShare(summary)).length)
             ),
         };
     }
@@ -211,7 +190,7 @@ export class TokenReportOverlay {
     private componentColumns(): Array<{ label: string; value: string; width: number }> {
         const lifetime = this.report.periods.lifetime;
         const columns = [
-            ['Total', formatCompactCount(lifetime.processed)],
+            ['Total', formatCompactCount(processedTokens(lifetime))],
             ['Input', formatCompactCount(lifetime.input)],
             ['Output', formatCompactCount(lifetime.output)],
             ['Cache read', formatCompactCount(lifetime.cacheRead)],
@@ -234,23 +213,6 @@ export class TokenReportOverlay {
         return this.componentColumns()
             .map(({ value, width }) => value.padStart(width))
             .join(COLUMN_GAP);
-    }
-
-    private renderDisclaimer(contentWidth: number): string[] {
-        const disclaimer = stripTerminalSequences(this.report.disclaimer)
-            .replace(/\s+/g, ' ')
-            .trim();
-        const wrapped = wrapTextWithAnsi(disclaimer, Math.max(1, contentWidth));
-        const first = wrapped[0] ?? '';
-        let second = wrapped[1];
-
-        if (wrapped.length > 2 && second !== undefined) {
-            second = `${truncateToWidth(second, Math.max(0, contentWidth - 1), '', false)}…`;
-        }
-
-        const lines = [this.theme.fg('muted', first)];
-        if (second !== undefined) lines.push(this.theme.fg('muted', second));
-        return lines;
     }
 
     private closeHint(): string {

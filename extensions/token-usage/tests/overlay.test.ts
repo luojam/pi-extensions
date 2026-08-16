@@ -21,7 +21,7 @@ function keybindings(keys: string[]): TokenReportOverlayKeybindings {
 }
 
 describe('TokenReportOverlay', () => {
-    it.each(['default', 'zero', 'formatting-edge', 'layout-edge'] as const)(
+    it.each(['default', 'zero', 'formatting-edge'] as const)(
         'keeps every %s report line within the supplied width',
         async (variant) => {
             const report = await createSampleTokenReportProvider(variant).load();
@@ -33,8 +33,9 @@ describe('TokenReportOverlay', () => {
             }
 
             const text = stripTerminalSequences(overlay.render(110).join('\n'));
-            expect(text).toContain('SAMPLE DATA');
-            expect(overlay.render(110).length).toBeLessThanOrEqual(30);
+            expect(text).toContain('Historical token usage');
+            expect(text).not.toContain('SAMPLE DATA');
+            expect(overlay.render(110).length).toBeLessThanOrEqual(20);
         }
     );
 
@@ -57,6 +58,9 @@ describe('TokenReportOverlay', () => {
             'Disclaimer',
             '1 event',
             'Lifetime token totals',
+            'SAMPLE DATA',
+            'Source',
+            'Sample values only',
         ]) {
             expect(text).not.toContain(removedLabel);
         }
@@ -92,9 +96,19 @@ describe('TokenReportOverlay', () => {
         expect(text.indexOf('Cache read')).toBeLessThan(text.indexOf('Period'));
     });
 
+    it('renders zero usage normally with an em dash for subagent share', async () => {
+        const report = await createSampleTokenReportProvider('zero').load();
+        const overlay = new TokenReportOverlay(report, theme, keybindings(['escape']), vi.fn());
+        const text = stripTerminalSequences(overlay.render(110).join('\n'));
+
+        expect(text).toContain('$0.00');
+        expect(text).toContain('—');
+        expect(text).not.toContain('NaN');
+    });
+
     it('shows a centered compact message while the terminal is too small', async () => {
         const report = await createSampleTokenReportProvider().load();
-        const terminal = { columns: 100, rows: 18 };
+        const terminal = { columns: 100, rows: 16 };
         const overlay = new TokenReportOverlay(
             report,
             theme,
@@ -117,6 +131,23 @@ describe('TokenReportOverlay', () => {
 
         terminal.rows = 40;
         expect(overlay.render(96).length).toBeGreaterThan(1);
+    });
+
+    it('uses the compact fallback when the terminal is too narrow', async () => {
+        const report = await createSampleTokenReportProvider().load();
+        const terminal = { columns: 73, rows: 40 };
+        const overlay = new TokenReportOverlay(
+            report,
+            theme,
+            keybindings(['escape']),
+            vi.fn(),
+            () => terminal
+        );
+
+        expect(overlay.render(69).map(stripTerminalSequences)).toHaveLength(3);
+
+        terminal.columns = 100;
+        expect(overlay.render(76).length).toBeGreaterThan(3);
     });
 
     it('closes once through the configured cancel action', async () => {

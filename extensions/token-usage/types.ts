@@ -1,15 +1,10 @@
 export interface TokenReport {
-    source: {
-        kind: 'sample' | 'session-records';
-        label: string;
-    };
     periods: {
         lifetime: TokenUsageSummary;
         today: TokenUsageSummary;
         sevenDays: TokenUsageSummary;
         thirtyDays: TokenUsageSummary;
     };
-    disclaimer: string;
 }
 
 export interface TokenComponents {
@@ -20,8 +15,18 @@ export interface TokenComponents {
 }
 
 export interface TokenUsageSummary extends TokenComponents {
-    processed: number;
-    knownCostUsd: number;
-    unknownCostEvents: number;
-    subagentShare: number | null;
+    recordedCostUsd: number;
+    subagentProcessed: number;
+}
+
+export type UsageOrigin = 'assistant' | 'tool' | 'subagent' | 'compaction' | 'branch-summary';
+
+/** Internal accounting record shared by extraction, reconciliation, and aggregation. */
+export interface UsageEvent {
+    fingerprint: string;
+    occurredAt?: number;
+    components: TokenComponents;
+    recordedCostUsd?: number;
+    origin: UsageOrigin;
+    sourceFile?: string;
 }
