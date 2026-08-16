@@ -19,6 +19,7 @@
         "vitest": "^4.1.10"
     },
     "scripts": {
+        "test": "vitest run",
         "typecheck": "tsc --project tsconfig.json",
         "check": "biome check .",
         "check:write": "biome check --write .",

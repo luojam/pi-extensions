@@ -46,6 +46,21 @@ const assistant = (id: string, input: number, timestamp = Date.UTC(2025, 0, 2, 1
     },
 });
 
+const subagentResult = (id: string, childFile: string, childId: string, input?: number) => ({
+    type: 'message',
+    id,
+    parentId: null,
+    timestamp: '2025-01-02T12:00:00.000Z',
+    message: {
+        role: 'toolResult',
+        toolName: 'subagent',
+        toolCallId: `call-${id}`,
+        timestamp: Date.UTC(2025, 0, 2, 12),
+        details: { sessionFile: childFile, sessionId: childId },
+        ...(input === undefined ? {} : { usage: usage(input) }),
+    },
+});
+
 async function writeSession(path: string, id: string, entries: readonly unknown[]): Promise<void> {
     await mkdir(dirname(path), { recursive: true });
     const records = [
@@ -116,6 +131,56 @@ describe('session report provider', () => {
         expect(report.periods.today).toEqual(report.periods.lifetime);
         expect(report.periods.sevenDays).toEqual(report.periods.lifetime);
         expect(report.periods.thirtyDays).toEqual(report.periods.lifetime);
+    });
+
+    it('reconciles authoritative, fallback, and unreferenced subagent files end to end', async () => {
+        const root = await temporaryDirectory();
+        const sessionRoot = join(root, 'sessions');
+        const subagents = join(sessionRoot, 'subagents');
+        await writeSession(join(sessionRoot, 'parent.jsonl'), 'parent', [
+            subagentResult('rollup', 'subagents/authoritative.jsonl', 'authoritative', 10),
+            subagentResult('fallback', 'subagents/fallback.jsonl', 'fallback'),
+        ]);
+        await writeSession(join(subagents, 'authoritative.jsonl'), 'authoritative', [
+            assistant('suppressed-work', 9),
+        ]);
+        await writeSession(join(subagents, 'fallback.jsonl'), 'fallback', [
+            assistant('fallback-work', 4),
+        ]);
+        await writeSession(join(subagents, 'orphan.jsonl'), 'orphan', [
+            assistant('orphan-work', 3),
+        ]);
+        const provider = createSessionReportProvider({ defaultSessionRoot: sessionRoot });
+
+        const report = await provider.load(request(sessionRoot));
+
+        expect(report.periods.lifetime).toEqual({
+            input: 17,
+            output: 20,
+            cacheRead: 23,
+            cacheWrite: 26,
+            recordedCostUsd: 1.7,
+            subagentProcessed: 86,
+        });
+    });
+
+    it('does not treat an empty in-memory session directory as the process directory', async () => {
+        const root = await temporaryDirectory();
+        await writeSession(join(root, 'unrelated.jsonl'), 'decoy', [
+            assistant('unrelated-entry', 90),
+        ]);
+        const provider = createSessionReportProvider({
+            defaultSessionRoot: join(root, 'missing-default'),
+        });
+        const previousCwd = process.cwd();
+
+        try {
+            process.chdir(root);
+            const report = await provider.load(request('', [assistant('ephemeral-entry', 6)]));
+            expect(report.periods.lifetime.input).toBe(6);
+        } finally {
+            process.chdir(previousCwd);
+        }
     });
 
     it('returns a normal zero report for missing stores', async () => {

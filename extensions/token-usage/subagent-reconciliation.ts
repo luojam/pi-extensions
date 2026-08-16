@@ -145,7 +145,8 @@ function resolveReference(
             ? undefined
             : bySessionId.get(reference.childSessionId);
 
-    if (pathMatch !== undefined && idMatch !== undefined && pathMatch !== idMatch) return undefined;
+    // An explicit discovered file is the strongest link. Session IDs are a fallback for
+    // stale/missing paths and must not negate an otherwise valid file reference.
     return pathMatch ?? idMatch;
 }
 

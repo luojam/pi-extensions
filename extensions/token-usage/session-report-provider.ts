@@ -23,10 +23,11 @@ export function createSessionReportProvider(
             const { signal } = request;
             signal.throwIfAborted();
 
-            const files = await discoverSessionFiles(
-                [defaultSessionRoot, request.currentSession.directory],
-                { signal }
-            );
+            const roots = [defaultSessionRoot];
+            if (request.currentSession.directory.trim().length > 0) {
+                roots.push(request.currentSession.directory);
+            }
+            const files = await discoverSessionFiles(roots, { signal });
             signal.throwIfAborted();
 
             const diskSessions = await scanSessionFiles(files, {

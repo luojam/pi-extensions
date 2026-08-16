@@ -20,11 +20,9 @@ export interface ExtractedUsageEvent extends UsageEvent {
 }
 
 export interface SubagentReference {
-    parentSourceKey: string;
     childFile?: string;
     childSessionId?: string;
     authoritative: boolean;
-    parentFingerprint?: string;
 }
 
 export interface ExtractedSession {
@@ -51,7 +49,6 @@ interface FingerprintInput {
     carrier: 'assistant' | 'tool' | 'compaction' | 'branch-summary';
     role?: string;
     entryId?: string;
-    parentId?: string | null;
     ordinal?: number;
     occurredAt?: number;
     provider?: string;
@@ -141,10 +138,9 @@ function normalizedEvent(
 
 function childReference(
     message: Record<string, unknown>,
-    sourceKey: string,
     sourceFile: string | undefined,
     linkBaseDirectory: string | undefined,
-    parentFingerprint: string | undefined
+    authoritative: boolean
 ): SubagentReference | undefined {
     if (message.toolName !== 'subagent' || !isRecord(message.details)) return undefined;
     const linkedFile = stringValue(message.details.sessionFile);
@@ -162,13 +158,7 @@ function childReference(
                   linkedFile
               );
     }
-    return {
-        parentSourceKey: sourceKey,
-        childFile,
-        childSessionId,
-        authoritative: parentFingerprint !== undefined,
-        parentFingerprint,
-    };
+    return { childFile, childSessionId, authoritative };
 }
 
 interface ExtractedEntry {
@@ -186,8 +176,7 @@ export function extractSessionEntry(
 ): ExtractedEntry {
     if (!isRecord(value)) return {};
     const entryId = stringValue(value.id);
-    const parentId = value.parentId === null ? null : stringValue(value.parentId);
-    const identity = { entryId, parentId, ordinal };
+    const identity = { entryId, ordinal };
 
     if (value.type === 'message' && isRecord(value.message)) {
         const message = value.message;
@@ -234,10 +223,9 @@ export function extractSessionEntry(
                 event,
                 reference: childReference(
                     message,
-                    sourceKey,
                     sourceFile,
                     linkBaseDirectory,
-                    event?.fingerprint
+                    event !== undefined
                 ),
             };
         }

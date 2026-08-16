@@ -87,6 +87,44 @@ describe('subagent reconciliation', () => {
         expect(events[0].origin).toBe('subagent');
     });
 
+    it('prefers a discovered child file when its session ID points elsewhere', async () => {
+        const referencedFile = '/synthetic/subagents/referenced.jsonl';
+        const parent = session('/synthetic/parent.jsonl', 'parent', [
+            subagentResult('parent-rollup', referencedFile, 'different-child', 10),
+        ]);
+        const referenced = session(
+            referencedFile,
+            'referenced-child',
+            [assistant('referenced-work', 9)],
+            true
+        );
+        const different = session(
+            '/synthetic/subagents/different.jsonl',
+            'different-child',
+            [assistant('different-work', 2)],
+            true
+        );
+
+        const events = await reconcileUsageEvents([parent, referenced, different]);
+
+        expect(events.map((event) => event.components.input)).toEqual([10, 2]);
+    });
+
+    it('keeps distinct parent rollups that reference the same suppressed child', async () => {
+        const childFile = '/synthetic/subagents/shared.jsonl';
+        const firstParent = session('/synthetic/first-parent.jsonl', 'first-parent', [
+            subagentResult('first-rollup', childFile, 'shared', 10),
+        ]);
+        const secondParent = session('/synthetic/second-parent.jsonl', 'second-parent', [
+            subagentResult('second-rollup', childFile, 'shared', 12),
+        ]);
+        const child = session(childFile, 'shared', [assistant('shared-work', 9)], true);
+
+        const events = await reconcileUsageEvents([firstParent, secondParent, child]);
+
+        expect(events.map((event) => event.components.input)).toEqual([10, 12]);
+    });
+
     it('canonicalizes a symlinked child reference before authoritative reconciliation', async () => {
         const directory = await mkdtemp(join(tmpdir(), 'token-usage-link-'));
         temporaryDirectories.push(directory);
