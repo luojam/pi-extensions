@@ -1,5 +1,5 @@
-import type { TokenReportProvider } from './provider.ts';
-import type { TokenReport, TokenUsageSummary } from './types.ts';
+import type { TokenReportProvider, TokenReportRequest } from '../provider.ts';
+import type { TokenReport, TokenUsageSummary } from '../types.ts';
 
 export type SampleTokenReportVariant = 'default' | 'zero' | 'formatting-edge';
 
@@ -77,9 +77,14 @@ function cloneReport(report: TokenReport): TokenReport {
     };
 }
 
+export interface SampleTokenReportProvider extends TokenReportProvider {
+    load(request?: TokenReportRequest): Promise<TokenReport>;
+}
+
+/** Deterministic fixture provider for overlay and command tests only. */
 export function createSampleTokenReportProvider(
     variant: SampleTokenReportVariant = 'default'
-): TokenReportProvider {
+): SampleTokenReportProvider {
     return {
         async load(): Promise<TokenReport> {
             return cloneReport(REPORTS[variant]);

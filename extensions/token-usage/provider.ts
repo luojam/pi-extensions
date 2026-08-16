@@ -1,11 +1,23 @@
-import { createSampleTokenReportProvider } from './sample-report-provider.ts';
+import type { SessionEntry } from '@earendil-works/pi-coding-agent';
+import { createSessionReportProvider } from './session-report-provider.ts';
 import type { TokenReport } from './types.ts';
 
-export interface TokenReportProvider {
-    load(): Promise<TokenReport>;
+export interface TokenReportRequest {
+    now: Date;
+    signal: AbortSignal;
+    currentSession: {
+        id: string;
+        file?: string;
+        directory: string;
+        entries: readonly SessionEntry[];
+    };
 }
 
-/** The construction seam for the future session-record provider. */
+export interface TokenReportProvider {
+    load(request: TokenReportRequest): Promise<TokenReport>;
+}
+
+/** Production construction always uses the read-only session-record provider. */
 export function createTokenReportProvider(): TokenReportProvider {
-    return createSampleTokenReportProvider();
+    return createSessionReportProvider();
 }

@@ -93,7 +93,7 @@ describe('summary selectors', () => {
 });
 
 describe('aggregateUsageEvents', () => {
-    it('uses inclusive local-calendar boundaries and a single cutoff', () => {
+    it('uses inclusive local-calendar boundaries and a single cutoff', async () => {
         const now = new Date(2025, 5, 15, 12, 34, 56, 789);
         const todayStart = new Date(2025, 5, 15).getTime();
         const sevenDaysStart = new Date(2025, 5, 9).getTime();
@@ -111,7 +111,7 @@ describe('aggregateUsageEvents', () => {
             event('at-cutoff', 512, now.getTime()),
         ];
 
-        const report = aggregateUsageEvents(events, now);
+        const report = await aggregateUsageEvents(events, now);
 
         expect(report.periods.today.input).toBe(513);
         expect(report.periods.sevenDays.input).toBe(519);
@@ -125,7 +125,7 @@ describe('aggregateUsageEvents', () => {
         }
     });
 
-    it('uses calendar days rather than fixed 24-hour durations across daylight saving time', () => {
+    it('uses calendar days rather than fixed 24-hour durations across daylight saving time', async () => {
         const previousTimezone = process.env.TZ;
         process.env.TZ = 'America/New_York';
 
@@ -134,7 +134,7 @@ describe('aggregateUsageEvents', () => {
             const sevenDaysStart = new Date(2025, 2, 4).getTime();
             expect(now.getTime() - sevenDaysStart).toBe(155 * 60 * 60 * 1000);
 
-            const report = aggregateUsageEvents(
+            const report = await aggregateUsageEvents(
                 [
                     event('boundary', 1, sevenDaysStart),
                     event('before-boundary', 2, sevenDaysStart - 1),
@@ -150,7 +150,7 @@ describe('aggregateUsageEvents', () => {
         }
     });
 
-    it('counts subagent tokens and ignores invalid cost without dropping valid tokens', () => {
+    it('counts subagent tokens and ignores invalid cost without dropping valid tokens', async () => {
         const now = new Date(2025, 0, 2, 12);
         const events: UsageEvent[] = [
             event('assistant', 1, now.getTime()),
@@ -160,7 +160,7 @@ describe('aggregateUsageEvents', () => {
             },
         ];
 
-        const summary = aggregateUsageEvents(events, now).periods.today;
+        const summary = (await aggregateUsageEvents(events, now)).periods.today;
 
         expect(processedTokens(summary)).toBe(40);
         expect(summary.subagentProcessed).toBe(30);
@@ -168,16 +168,32 @@ describe('aggregateUsageEvents', () => {
         expect(summary.recordedCostUsd).toBe(1);
     });
 
-    it('silently skips an event with any invalid token component', () => {
+    it('silently skips an event with any invalid token component', async () => {
         const now = new Date(2025, 0, 2, 12);
         const invalid = {
             ...event('invalid', 1, now.getTime()),
             components: { ...components(1), cacheWrite: -1 },
         };
 
-        const report = aggregateUsageEvents([invalid], now);
+        const report = await aggregateUsageEvents([invalid], now);
 
         expect(processedTokens(report.periods.lifetime)).toBe(0);
         expect(report.periods.lifetime.recordedCostUsd).toBe(0);
+    });
+
+    it('yields to the event loop and observes cancellation during aggregation', async () => {
+        const controller = new AbortController();
+        const abort = setImmediate(() => controller.abort());
+
+        try {
+            await expect(
+                aggregateUsageEvents([event('pending', 1, Date.now())], new Date(), {
+                    signal: controller.signal,
+                    batchSize: 1,
+                })
+            ).rejects.toMatchObject({ name: 'AbortError' });
+        } finally {
+            clearImmediate(abort);
+        }
     });
 });

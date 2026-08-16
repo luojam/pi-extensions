@@ -73,14 +73,14 @@ function session(
 }
 
 describe('subagent reconciliation', () => {
-    it('keeps an authoritative parent rollup and suppresses its referenced child', () => {
+    it('keeps an authoritative parent rollup and suppresses its referenced child', async () => {
         const childFile = '/synthetic/sessions/subagents/child.jsonl';
         const parent = session('/synthetic/sessions/parent.jsonl', 'parent', [
             subagentResult('parent-rollup', childFile, 'child', 10),
         ]);
         const child = session(childFile, 'child', [assistant('child-work', 9)], true);
 
-        const events = reconcileUsageEvents([parent, child]);
+        const events = await reconcileUsageEvents([parent, child]);
 
         expect(events).toHaveLength(1);
         expect(events[0].components.input).toBe(10);
@@ -114,28 +114,28 @@ describe('subagent reconciliation', () => {
         const parent = await parseSessionFile(parentFile);
         const child = await parseSessionFile({ path: childFile, isSubagentFile: true });
 
-        const events = reconcileUsageEvents(
+        const events = await reconcileUsageEvents(
             parent === null || child === null ? [] : [parent, child]
         );
 
         expect(events.map((event) => event.components.input)).toEqual([10]);
     });
 
-    it('uses and classifies a referenced child when its parent has no valid usage', () => {
+    it('uses and classifies a referenced child when its parent has no valid usage', async () => {
         const childFile = '/synthetic/custom/child.jsonl';
         const parent = session('/synthetic/custom/parent.jsonl', 'parent', [
             subagentResult('missing-rollup', childFile, 'child'),
         ]);
         const child = session(childFile, 'child', [assistant('child-work', 9)]);
 
-        const events = reconcileUsageEvents([parent, child]);
+        const events = await reconcileUsageEvents([parent, child]);
 
         expect(events).toHaveLength(1);
         expect(events[0].components.input).toBe(9);
         expect(events[0].origin).toBe('subagent');
     });
 
-    it('classifies an unreferenced physical subagent file as subagent work', () => {
+    it('classifies an unreferenced physical subagent file as subagent work', async () => {
         const child = session(
             '/synthetic/sessions/subagents/orphan.jsonl',
             'orphan',
@@ -143,10 +143,10 @@ describe('subagent reconciliation', () => {
             true
         );
 
-        expect(reconcileUsageEvents([child])[0].origin).toBe('subagent');
+        expect((await reconcileUsageEvents([child]))[0].origin).toBe('subagent');
     });
 
-    it('suppresses nested descendants transitively beneath an authoritative ancestor', () => {
+    it('suppresses nested descendants transitively beneath an authoritative ancestor', async () => {
         const childFile = '/synthetic/subagents/child.jsonl';
         const grandchildFile = '/synthetic/subagents/grandchild.jsonl';
         const parent = session('/synthetic/parent.jsonl', 'parent', [
@@ -168,12 +168,12 @@ describe('subagent reconciliation', () => {
             true
         );
 
-        const events = reconcileUsageEvents([parent, child, grandchild]);
+        const events = await reconcileUsageEvents([parent, child, grandchild]);
 
         expect(events.map((event) => event.components.input)).toEqual([20]);
     });
 
-    it('suppresses copied child prefixes but retains work added after the clone', () => {
+    it('suppresses copied child prefixes but retains work added after the clone', async () => {
         const childFile = '/synthetic/subagents/child.jsonl';
         const copied = assistant('copied-child-work', 9);
         const parent = session('/synthetic/parent.jsonl', 'parent', [
@@ -185,12 +185,12 @@ describe('subagent reconciliation', () => {
             assistant('new-clone-work', 3),
         ]);
 
-        const events = reconcileUsageEvents([parent, child, clone]);
+        const events = await reconcileUsageEvents([parent, child, clone]);
 
         expect(events.map((event) => event.components.input)).toEqual([10, 3]);
     });
 
-    it('suppresses an authoritative nested rollup copied from a suppressed child', () => {
+    it('suppresses an authoritative nested rollup copied from a suppressed child', async () => {
         const childFile = '/synthetic/subagents/child.jsonl';
         const grandchildFile = '/synthetic/subagents/grandchild.jsonl';
         const copiedNestedRollup = subagentResult(
@@ -214,12 +214,12 @@ describe('subagent reconciliation', () => {
             assistant('new-clone-work', 2),
         ]);
 
-        const events = reconcileUsageEvents([parent, child, grandchild, clone]);
+        const events = await reconcileUsageEvents([parent, child, grandchild, clone]);
 
         expect(events.map((event) => event.components.input)).toEqual([100, 2]);
     });
 
-    it('does not follow missing links and resolves a stale path by unique discovered session ID', () => {
+    it('does not follow missing links and resolves a stale path by unique discovered session ID', async () => {
         const actualChildFile = '/synthetic/subagents/actual-child.jsonl';
         const parent = session('/synthetic/parent.jsonl', 'parent', [
             subagentResult('fallback', '/stale/path.jsonl', 'child'),
@@ -227,23 +227,40 @@ describe('subagent reconciliation', () => {
         ]);
         const child = session(actualChildFile, 'child', [assistant('child-work', 4)]);
 
-        const events = reconcileUsageEvents([parent, child]);
+        const events = await reconcileUsageEvents([parent, child]);
 
         expect(events.map((event) => event.components.input)).toEqual([4]);
         expect(events[0].origin).toBe('subagent');
     });
 
-    it('does not use an ambiguous cloned session ID as a link fallback', () => {
+    it('does not use an ambiguous cloned session ID as a link fallback', async () => {
         const parent = session('/synthetic/parent.jsonl', 'parent', [
             subagentResult('ambiguous', '/stale/path.jsonl', 'duplicate'),
         ]);
         const first = session('/synthetic/first.jsonl', 'duplicate', [assistant('first', 1)]);
         const second = session('/synthetic/second.jsonl', 'duplicate', [assistant('second', 2)]);
 
-        const events = reconcileUsageEvents([parent, first, second]);
+        const events = await reconcileUsageEvents([parent, first, second]);
 
         expect(events.map((event) => event.components.input)).toEqual([1, 2]);
         expect(events.every((event) => event.origin === 'assistant')).toBe(true);
+    });
+
+    it('yields to the event loop and observes cancellation during reconciliation', async () => {
+        const controller = new AbortController();
+        const child = session('/synthetic/child.jsonl', 'child', [assistant('work', 1)]);
+        const abort = setImmediate(() => controller.abort());
+
+        try {
+            await expect(
+                reconcileUsageEvents([child], {
+                    signal: controller.signal,
+                    batchSize: 1,
+                })
+            ).rejects.toMatchObject({ name: 'AbortError' });
+        } finally {
+            clearImmediate(abort);
+        }
     });
 });
 
@@ -273,7 +290,7 @@ describe('current-session merge', () => {
             entries: [entry],
         });
 
-        expect(reconcileUsageEvents(merged)).toHaveLength(1);
+        expect(await reconcileUsageEvents(merged)).toHaveLength(1);
     });
 
     it('includes an ephemeral snapshot', async () => {
@@ -283,7 +300,28 @@ describe('current-session merge', () => {
             entries: [assistant('ephemeral-entry', 6)],
         });
 
-        expect(reconcileUsageEvents(merged)[0].components.input).toBe(6);
+        expect((await reconcileUsageEvents(merged))[0].components.input).toBe(6);
+    });
+
+    it('yields to the event loop and observes cancellation while normalizing a snapshot', async () => {
+        const controller = new AbortController();
+        const abort = setImmediate(() => controller.abort());
+
+        try {
+            await expect(
+                mergeCurrentSessionSnapshot(
+                    [],
+                    {
+                        id: 'current',
+                        directory: '/synthetic',
+                        entries: [assistant('pending', 1)],
+                    },
+                    { signal: controller.signal, batchSize: 1 }
+                )
+            ).rejects.toMatchObject({ name: 'AbortError' });
+        } finally {
+            clearImmediate(abort);
+        }
     });
 
     it('resolves relative subagent links from an ephemeral snapshot directory', async () => {
@@ -299,7 +337,7 @@ describe('current-session merge', () => {
             entries: [subagentResult('relative-link', 'child.jsonl', 'unknown-child-id')],
         });
 
-        const events = reconcileUsageEvents(merged);
+        const events = await reconcileUsageEvents(merged);
         expect(events.map((event) => event.components.input)).toEqual([8]);
         expect(events[0].origin).toBe('subagent');
     });

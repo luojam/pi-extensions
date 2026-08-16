@@ -6,7 +6,7 @@ import {
     type TokenReportOverlayKeybindings,
     type TokenReportOverlayTheme,
 } from '../overlay.ts';
-import { createSampleTokenReportProvider } from '../sample-report-provider.ts';
+import { createSampleTokenReportProvider } from './sample-report-provider.ts';
 
 const theme: TokenReportOverlayTheme = {
     bold: (text) => `\x1b[1m${text}\x1b[22m`,

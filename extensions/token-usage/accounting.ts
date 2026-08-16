@@ -1,3 +1,4 @@
+import { type CooperativeWorkOptions, createWorkCheckpoint } from './cooperative-work.ts';
 import type { TokenComponents, TokenReport, TokenUsageSummary, UsageEvent } from './types.ts';
 
 const ZERO_SUMMARY = (): TokenUsageSummary => ({
@@ -81,7 +82,12 @@ function localMidnightDaysAgo(now: Date, daysAgo: number): number {
 }
 
 /** Aggregate accepted events using local-calendar windows and one injected cutoff. */
-export function aggregateUsageEvents(events: readonly UsageEvent[], now: Date): TokenReport {
+export async function aggregateUsageEvents(
+    events: readonly UsageEvent[],
+    now: Date,
+    options: CooperativeWorkOptions = {}
+): Promise<TokenReport> {
+    const checkpoint = createWorkCheckpoint(options);
     const periods: TokenReport['periods'] = {
         today: ZERO_SUMMARY(),
         sevenDays: ZERO_SUMMARY(),
@@ -94,6 +100,9 @@ export function aggregateUsageEvents(events: readonly UsageEvent[], now: Date): 
     const thirtyDaysStart = localMidnightDaysAgo(now, 29);
 
     for (const event of events) {
+        const pause = checkpoint();
+        if (pause !== undefined) await pause;
+
         const components = tokenComponentsFromUsage(event.components);
         if (components === null) continue;
 
@@ -109,5 +118,6 @@ export function aggregateUsageEvents(events: readonly UsageEvent[], now: Date): 
         if (occurredAt >= todayStart) addEvent(periods.today, event, components);
     }
 
+    options.signal?.throwIfAborted();
     return { periods };
 }

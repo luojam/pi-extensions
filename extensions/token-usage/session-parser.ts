@@ -3,6 +3,7 @@ import { createReadStream, type ReadStream } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import { recordedCostUsdFromUsage, tokenComponentsFromUsage } from './accounting.ts';
+import { type CooperativeWorkOptions, createWorkCheckpoint } from './cooperative-work.ts';
 import type { DiscoveredSessionFile } from './session-discovery.ts';
 import type { TokenComponents, UsageEvent, UsageOrigin } from './types.ts';
 
@@ -277,11 +278,7 @@ function supportedVersion(value: unknown): number | undefined {
         : undefined;
 }
 
-/** Normalize an in-memory current-session snapshot through the disk entry extractor. */
-export function extractSessionEntries(
-    entries: readonly unknown[],
-    options: ExtractSessionEntriesOptions = {}
-): ExtractedSession {
+function emptyExtractedSession(options: ExtractSessionEntriesOptions): ExtractedSession {
     const version = supportedVersion(options.version) ?? MAX_SUPPORTED_SESSION_VERSION;
     const sourceFile = options.sourceFile === undefined ? undefined : resolve(options.sourceFile);
     const sourceKey =
@@ -289,7 +286,7 @@ export function extractSessionEntries(
         (sourceFile === undefined
             ? `memory:${options.sessionId ?? 'current'}`
             : `file:${sourceFile}`);
-    const session: ExtractedSession = {
+    return {
         sourceKey,
         sourceFile,
         sessionId: options.sessionId,
@@ -298,18 +295,51 @@ export function extractSessionEntries(
         events: [],
         references: [],
     };
+}
 
+function appendExtractedEntry(
+    session: ExtractedSession,
+    entry: unknown,
+    ordinal: number,
+    linkBaseDirectory: string | undefined
+): void {
+    const extracted = extractSessionEntry(
+        entry,
+        ordinal,
+        session.sourceKey,
+        session.sourceFile,
+        linkBaseDirectory
+    );
+    if (extracted.event !== undefined) session.events.push(extracted.event);
+    if (extracted.reference !== undefined) session.references.push(extracted.reference);
+}
+
+/** Normalize in-memory entries synchronously, primarily for small fixtures and adapters. */
+export function extractSessionEntries(
+    entries: readonly unknown[],
+    options: ExtractSessionEntriesOptions = {}
+): ExtractedSession {
+    const session = emptyExtractedSession(options);
     entries.forEach((entry, ordinal) => {
-        const extracted = extractSessionEntry(
-            entry,
-            ordinal,
-            sourceKey,
-            sourceFile,
-            options.linkBaseDirectory
-        );
-        if (extracted.event !== undefined) session.events.push(extracted.event);
-        if (extracted.reference !== undefined) session.references.push(extracted.reference);
+        appendExtractedEntry(session, entry, ordinal, options.linkBaseDirectory);
     });
+    return session;
+}
+
+/** Normalize a potentially large current-session snapshot without monopolizing the event loop. */
+export async function extractSessionEntriesCooperatively(
+    entries: readonly unknown[],
+    options: ExtractSessionEntriesOptions = {},
+    workOptions: CooperativeWorkOptions = {}
+): Promise<ExtractedSession> {
+    const checkpoint = createWorkCheckpoint(workOptions);
+    const session = emptyExtractedSession(options);
+    for (let ordinal = 0; ordinal < entries.length; ordinal++) {
+        const pause = checkpoint();
+        if (pause !== undefined) await pause;
+        appendExtractedEntry(session, entries[ordinal], ordinal, options.linkBaseDirectory);
+    }
+    workOptions.signal?.throwIfAborted();
     return session;
 }
 

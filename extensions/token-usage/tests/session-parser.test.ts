@@ -237,7 +237,7 @@ describe('streaming session parsing', () => {
         const parsed = await scanSessionFiles([file]);
 
         expect(parsed[0].isSubagentFile).toBe(true);
-        expect(reconcileUsageEvents(parsed)[0].origin).toBe('subagent');
+        expect((await reconcileUsageEvents(parsed))[0].origin).toBe('subagent');
     });
 });
 
