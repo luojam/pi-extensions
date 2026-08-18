@@ -4,7 +4,7 @@ import { processedTokens, subagentShare } from './accounting.ts';
 import { formatCompactCount, formatTokenShare, formatUsdCost } from './format.ts';
 import type { TokenReport, TokenUsageSummary } from './types.ts';
 
-export type TokenUsageOverlayResult = 'closed';
+export type TokenUsageOverlayResult = 'closed' | 'cancelled' | 'failed';
 
 export const TOKEN_REPORT_PREFERRED_WIDTH = 76;
 export const TOKEN_REPORT_MINIMUM_WIDTH = 74;
@@ -12,6 +12,8 @@ export const TOKEN_REPORT_HORIZONTAL_MARGIN = 4;
 export const TOKEN_REPORT_VERTICAL_MARGIN = 2;
 
 const COLUMN_GAP = '      ';
+const LOADER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const LOADER_INTERVAL_MS = 80;
 
 export interface TokenReportOverlayKeybindings {
     getKeys(keybinding: 'tui.select.cancel'): ReturnType<KeybindingsManager['getKeys']>;
@@ -45,25 +47,55 @@ const PERIODS: Array<[string, keyof TokenReport['periods']]> = [
 export class TokenReportOverlay {
     private completed = false;
     private readonly cancelKeys: ReturnType<TokenReportOverlayKeybindings['getKeys']>;
-    private readonly report: TokenReport;
+    private report: TokenReport | undefined;
+    private loadFailed = false;
     private readonly theme: TokenReportOverlayTheme;
     private readonly keybindings: TokenReportOverlayKeybindings;
     private readonly done: (result: TokenUsageOverlayResult) => void;
     private readonly getTerminalSize: (() => { columns: number; rows: number }) | undefined;
+    private readonly requestRender: (() => void) | undefined;
+    private readonly abortController = new AbortController();
+    private loaderFrame = 0;
+    private loaderTimer: ReturnType<typeof setInterval> | undefined;
 
     constructor(
-        report: TokenReport,
+        report: TokenReport | undefined,
         theme: TokenReportOverlayTheme,
         keybindings: TokenReportOverlayKeybindings,
         done: (result: TokenUsageOverlayResult) => void,
-        getTerminalSize?: () => { columns: number; rows: number }
+        getTerminalSize?: () => { columns: number; rows: number },
+        requestRender?: () => void
     ) {
         this.report = report;
         this.theme = theme;
         this.keybindings = keybindings;
         this.done = done;
         this.getTerminalSize = getTerminalSize;
+        this.requestRender = requestRender;
         this.cancelKeys = keybindings.getKeys('tui.select.cancel');
+        if (report === undefined) this.startLoader();
+    }
+
+    get signal(): AbortSignal {
+        return this.abortController.signal;
+    }
+
+    get loading(): boolean {
+        return this.report === undefined && !this.loadFailed;
+    }
+
+    setReport(report: TokenReport): void {
+        if (this.completed || this.loadFailed) return;
+        this.report = report;
+        this.stopLoader();
+        this.requestRender?.();
+    }
+
+    fail(): void {
+        if (this.completed || this.report !== undefined || this.loadFailed) return;
+        this.loadFailed = true;
+        this.stopLoader();
+        this.requestRender?.();
     }
 
     handleInput(data: string): void {
@@ -72,11 +104,16 @@ export class TokenReportOverlay {
                 ? this.keybindings.matches(data, 'tui.select.cancel')
                 : matchesKey(data, 'escape');
 
-        if (shouldClose) this.complete('closed');
+        if (!shouldClose) return;
+        if (this.loadFailed) this.complete('failed');
+        else this.complete(this.report === undefined ? 'cancelled' : 'closed');
     }
 
     render(width: number): string[] {
         if (width <= 0) return [];
+
+        if (this.loadFailed) return this.renderFailure(width);
+        if (this.report === undefined) return this.renderLoader(width);
 
         const reportRows = this.renderReport(width);
         const terminalSize = this.getTerminalSize?.();
@@ -91,6 +128,44 @@ export class TokenReportOverlay {
     }
 
     invalidate(): void {}
+
+    dispose(): void {
+        this.stopLoader();
+        if (this.report === undefined && !this.signal.aborted) this.abortController.abort();
+    }
+
+    private renderLoader(width: number): string[] {
+        const borderInnerWidth = Math.max(0, width - 2);
+        const contentWidth = Math.max(0, width - 4);
+        const frame = LOADER_FRAMES[this.loaderFrame] ?? '';
+        const content = `${this.theme.fg('accent', frame)} ${this.theme.fg('muted', 'Loading token usage...')}`;
+        const top = this.theme.fg('border', `╭${'─'.repeat(borderInnerWidth)}╮`);
+        const bottom = this.theme.fg('border', `╰${'─'.repeat(borderInnerWidth)}╯`);
+
+        return [
+            top,
+            this.boxRow('', contentWidth),
+            this.boxRow(content, contentWidth),
+            this.boxRow('', contentWidth),
+            bottom,
+        ].map((line) => truncateToWidth(line, width, '', false));
+    }
+
+    private renderFailure(width: number): string[] {
+        const borderInnerWidth = Math.max(0, width - 2);
+        const contentWidth = Math.max(0, width - 4);
+        const message = this.theme.fg('error', 'Unable to load token report.');
+        const hint = this.theme.fg('dim', this.closeHint());
+        const top = this.theme.fg('border', `╭${'─'.repeat(borderInnerWidth)}╮`);
+        const bottom = this.theme.fg('border', `╰${'─'.repeat(borderInnerWidth)}╯`);
+
+        return [
+            top,
+            this.boxRow(message, contentWidth),
+            this.boxRow(hint, contentWidth),
+            bottom,
+        ].map((line) => truncateToWidth(line, width, '', false));
+    }
 
     private renderReport(width: number): string[] {
         const borderInnerWidth = Math.max(0, width - 2);
@@ -108,7 +183,7 @@ export class TokenReportOverlay {
         content.push('');
         content.push(this.renderPeriodHeader());
         for (const [label, key] of PERIODS) {
-            content.push(this.renderPeriod(label, this.report.periods[key]));
+            content.push(this.renderPeriod(label, this.report!.periods[key]));
         }
 
         content.push('');
@@ -169,7 +244,7 @@ export class TokenReportOverlay {
         cost: number;
         subagents: number;
     } {
-        const summaries = PERIODS.map(([, key]) => this.report.periods[key]);
+        const summaries = PERIODS.map(([, key]) => this.report!.periods[key]);
         return {
             label: Math.max('Period'.length, ...PERIODS.map(([label]) => label.length)),
             tokens: Math.max(
@@ -188,7 +263,7 @@ export class TokenReportOverlay {
     }
 
     private componentColumns(): Array<{ label: string; value: string; width: number }> {
-        const lifetime = this.report.periods.lifetime;
+        const lifetime = this.report!.periods.lifetime;
         const columns = [
             ['Total', formatCompactCount(processedTokens(lifetime))],
             ['Input', formatCompactCount(lifetime.input)],
@@ -224,9 +299,24 @@ export class TokenReportOverlay {
         return `${this.theme.fg('border', '│')} ${safeContent} ${this.theme.fg('border', '│')}`;
     }
 
+    private startLoader(): void {
+        this.loaderTimer = setInterval(() => {
+            this.loaderFrame = (this.loaderFrame + 1) % LOADER_FRAMES.length;
+            this.requestRender?.();
+        }, LOADER_INTERVAL_MS);
+    }
+
+    private stopLoader(): void {
+        if (this.loaderTimer === undefined) return;
+        clearInterval(this.loaderTimer);
+        this.loaderTimer = undefined;
+    }
+
     private complete(result: TokenUsageOverlayResult): void {
         if (this.completed) return;
         this.completed = true;
+        this.stopLoader();
+        if (result === 'cancelled' && !this.signal.aborted) this.abortController.abort();
         this.done(result);
     }
 }

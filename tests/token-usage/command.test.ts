@@ -2,6 +2,7 @@ import type { ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import type { Component } from '@earendil-works/pi-tui';
 import { describe, expect, it, vi } from 'vitest';
 import { createTokensHandler } from '../../extensions/token-usage/command.ts';
+import { TokenReportOverlay } from '../../extensions/token-usage/overlay.ts';
 import type {
     TokenReportProvider,
     TokenReportRequest,
@@ -20,42 +21,10 @@ function deferred<T>() {
     return { promise, resolve, reject };
 }
 
-class FakeLoader implements Component {
-    readonly controller = new AbortController();
-    readonly addEventListenerSpy = vi.spyOn(this.controller.signal, 'addEventListener');
-    readonly removeEventListenerSpy = vi.spyOn(this.controller.signal, 'removeEventListener');
-    onAbort: (() => void) | undefined;
-    disposed = false;
-
-    get signal(): AbortSignal {
-        return this.controller.signal;
-    }
-
-    abort(): void {
-        this.controller.abort();
-        this.onAbort?.();
-    }
-
-    render(): string[] {
-        return ['loading'];
-    }
-
-    handleInput(data: string): void {
-        if (data === '\x1b') this.abort();
-    }
-
-    invalidate(): void {}
-
-    dispose(): void {
-        this.disposed = true;
-    }
-}
-
 interface ContextHarness {
     ctx: ExtensionCommandContext;
     notifications: Array<[string, string | undefined]>;
     custom: ReturnType<typeof vi.fn>;
-    loaders: FakeLoader[];
     components: Component[];
     waitForIdle: ReturnType<typeof vi.fn>;
     sessionGetters: {
@@ -78,7 +47,6 @@ function createContext(
     } = {}
 ): ContextHarness {
     const notifications: Array<[string, string | undefined]> = [];
-    const loaders: FakeLoader[] = [];
     const components: Component[] = [];
     const pendingOverlayClosers: Array<() => void> = [];
     let entries: readonly unknown[] = [];
@@ -121,7 +89,15 @@ function createContext(
                 component = factory(
                     {
                         terminal: { columns, rows },
-                        requestRender: () => {},
+                        requestRender: () => {
+                            if (
+                                autoCloseOverlay &&
+                                component instanceof TokenReportOverlay &&
+                                !component.loading
+                            ) {
+                                component.handleInput?.('\x1b');
+                            }
+                        },
                     },
                     {
                         bold: (text: string) => text,
@@ -135,10 +111,8 @@ function createContext(
                 );
                 components.push(component);
 
-                if (customOptions?.overlay) {
-                    const close = () => component?.handleInput?.('\x1b');
-                    if (autoCloseOverlay) close();
-                    else pendingOverlayClosers.push(close);
+                if (customOptions?.overlay && !autoCloseOverlay) {
+                    pendingOverlayClosers.push(() => component?.handleInput?.('\x1b'));
                 }
             })
     );
@@ -157,7 +131,6 @@ function createContext(
         ctx,
         notifications,
         custom,
-        loaders,
         components,
         waitForIdle,
         sessionGetters,
@@ -170,19 +143,8 @@ function createContext(
     };
 }
 
-function handlerWithFakeLoader(
-    provider: TokenReportProvider,
-    harness: ContextHarness,
-    now = new Date('2025-02-03T04:05:06.000Z')
-) {
-    return createTokensHandler(provider, {
-        now: () => now,
-        createLoader: () => {
-            const loader = new FakeLoader();
-            harness.loaders.push(loader);
-            return loader;
-        },
-    });
+function createHandler(provider: TokenReportProvider, now = new Date('2025-02-03T04:05:06.000Z')) {
+    return createTokensHandler(provider, { now: () => now });
 }
 
 describe('createTokensHandler', () => {
@@ -190,7 +152,7 @@ describe('createTokensHandler', () => {
         const provider = { load: vi.fn(async () => report) };
         const harness = createContext(mode);
 
-        await handlerWithFakeLoader(provider, harness)('', harness.ctx);
+        await createHandler(provider)('', harness.ctx);
 
         expect(provider.load).not.toHaveBeenCalled();
         expect(harness.waitForIdle).not.toHaveBeenCalled();
@@ -198,17 +160,17 @@ describe('createTokensHandler', () => {
         expect(harness.custom).not.toHaveBeenCalled();
     });
 
-    it('opens the loader immediately, then snapshots and loads only after idle', async () => {
+    it('opens one modal with a loader, then replaces it after idle', async () => {
         const idle = deferred<void>();
         const loading = deferred<typeof report>();
         const provider: TokenReportProvider = { load: vi.fn(() => loading.promise) };
         const harness = createContext('tui', { waitForIdle: () => idle.promise });
         const entriesAfterIdle = [{ type: 'custom', id: 'committed' }];
         const cutoff = new Date('2025-02-03T04:05:06.000Z');
-        const pending = handlerWithFakeLoader(provider, harness, cutoff)('', harness.ctx);
+        const pending = createHandler(provider, cutoff)('', harness.ctx);
 
         expect(harness.custom).toHaveBeenCalledTimes(1);
-        expect(harness.loaders).toHaveLength(1);
+        expect(harness.components[0]?.render(76).join('\n')).toContain('Loading token usage...');
         expect(provider.load).not.toHaveBeenCalled();
         expect(harness.sessionGetters.getEntries).not.toHaveBeenCalled();
 
@@ -216,10 +178,11 @@ describe('createTokensHandler', () => {
         idle.resolve();
         await vi.waitFor(() => expect(provider.load).toHaveBeenCalledTimes(1));
 
+        const overlay = harness.components[0] as TokenReportOverlay;
         const request = vi.mocked(provider.load).mock.calls[0][0];
         expect(request).toMatchObject({
             now: cutoff,
-            signal: harness.loaders[0].signal,
+            signal: overlay.signal,
             currentSession: {
                 id: 'current-id',
                 file: '/sessions/current.jsonl',
@@ -228,38 +191,29 @@ describe('createTokensHandler', () => {
             },
         });
         expect(request.currentSession.entries).not.toBe(entriesAfterIdle);
-        expect(harness.custom).toHaveBeenCalledTimes(1);
 
         loading.resolve(report);
         await pending;
 
-        expect(harness.custom).toHaveBeenCalledTimes(2);
+        expect(harness.custom).toHaveBeenCalledTimes(1);
         expect(harness.notifications).toEqual([]);
-        expect(harness.loaders[0].disposed).toBe(true);
     });
 
     it('cancels and releases the idle-wait continuation immediately', async () => {
         const idle = deferred<void>();
         const provider = { load: vi.fn(async () => report) };
         const harness = createContext('tui', { waitForIdle: () => idle.promise });
-        const pending = handlerWithFakeLoader(provider, harness)('', harness.ctx);
+        const pending = createHandler(provider)('', harness.ctx);
         await vi.waitFor(() => expect(harness.waitForIdle).toHaveBeenCalledTimes(1));
 
-        const loader = harness.loaders[0];
-        loader.abort();
+        const overlay = harness.components[0] as TokenReportOverlay;
+        overlay.handleInput('\x1b');
         await pending;
-        await vi.waitFor(() => expect(loader.removeEventListenerSpy).toHaveBeenCalledTimes(1));
 
-        const abortListener = loader.addEventListenerSpy.mock.calls.find(
-            ([event]) => event === 'abort'
-        )?.[1];
-        expect(abortListener).toBeDefined();
-        expect(loader.removeEventListenerSpy).toHaveBeenCalledWith('abort', abortListener);
-        expect(loader.onAbort).toBeUndefined();
+        expect(overlay.signal.aborted).toBe(true);
         expect(provider.load).not.toHaveBeenCalled();
         expect(harness.sessionGetters.getEntries).not.toHaveBeenCalled();
         expect(harness.notifications).toEqual([]);
-        expect(harness.custom).toHaveBeenCalledTimes(1);
 
         // The abandoned underlying wait remains observed even if it rejects later.
         idle.reject(new Error('late idle failure'));
@@ -267,7 +221,7 @@ describe('createTokensHandler', () => {
         expect(provider.load).not.toHaveBeenCalled();
     });
 
-    it('does not open a stale report when cancellation races a provider that ignores abort', async () => {
+    it('does not show a stale report when cancellation races a provider that ignores abort', async () => {
         const loading = deferred<typeof report>();
         let request: TokenReportRequest | undefined;
         const provider: TokenReportProvider = {
@@ -277,10 +231,10 @@ describe('createTokensHandler', () => {
             }),
         };
         const harness = createContext('tui');
-        const pending = handlerWithFakeLoader(provider, harness)('', harness.ctx);
+        const pending = createHandler(provider)('', harness.ctx);
         await vi.waitFor(() => expect(provider.load).toHaveBeenCalledTimes(1));
 
-        harness.loaders[0].abort();
+        (harness.components[0] as TokenReportOverlay).handleInput('\x1b');
         await pending;
 
         expect(request?.signal.aborted).toBe(true);
@@ -292,7 +246,7 @@ describe('createTokensHandler', () => {
         expect(harness.custom).toHaveBeenCalledTimes(1);
     });
 
-    it('closes the loader and reports a provider failure once', async () => {
+    it('shows a provider failure in the modal without a redundant notification', async () => {
         const provider: TokenReportProvider = {
             load: vi.fn(async () => {
                 throw new Error('boom');
@@ -300,14 +254,13 @@ describe('createTokensHandler', () => {
         };
         const harness = createContext('tui');
 
-        await handlerWithFakeLoader(provider, harness)('', harness.ctx);
+        await createHandler(provider)('', harness.ctx);
 
-        expect(harness.notifications).toEqual([['Unable to load token report.', 'error']]);
+        expect(harness.notifications).toEqual([]);
         expect(harness.custom).toHaveBeenCalledTimes(1);
-        expect(harness.loaders[0].disposed).toBe(true);
     });
 
-    it('treats idle-wait failure as the same generic fatal error', async () => {
+    it('shows idle-wait failure in the modal without a redundant notification', async () => {
         const provider = { load: vi.fn(async () => report) };
         const harness = createContext('tui', {
             waitForIdle: async () => {
@@ -315,10 +268,10 @@ describe('createTokensHandler', () => {
             },
         });
 
-        await handlerWithFakeLoader(provider, harness)('', harness.ctx);
+        await createHandler(provider)('', harness.ctx);
 
         expect(provider.load).not.toHaveBeenCalled();
-        expect(harness.notifications).toEqual([['Unable to load token report.', 'error']]);
+        expect(harness.notifications).toEqual([]);
     });
 
     it.each([
@@ -329,13 +282,13 @@ describe('createTokensHandler', () => {
         async (columns, rows) => {
             const provider = { load: vi.fn(async () => report) };
             const harness = createContext('tui', { columns, rows });
-            const handler = handlerWithFakeLoader(provider, harness);
+            const handler = createHandler(provider);
 
             await handler('', harness.ctx);
             await handler('', harness.ctx);
 
             expect(harness.notifications).toEqual([]);
-            expect(harness.custom).toHaveBeenCalledTimes(4);
+            expect(harness.custom).toHaveBeenCalledTimes(2);
         }
     );
 
@@ -343,7 +296,7 @@ describe('createTokensHandler', () => {
         const idle = deferred<void>();
         const provider = { load: vi.fn(async () => report) };
         const harness = createContext('tui', { waitForIdle: () => idle.promise });
-        const handler = handlerWithFakeLoader(provider, harness);
+        const handler = createHandler(provider);
 
         const first = handler('', harness.ctx);
         await handler('', harness.ctx);
@@ -351,21 +304,24 @@ describe('createTokensHandler', () => {
         expect(harness.custom).toHaveBeenCalledTimes(1);
         expect(harness.waitForIdle).toHaveBeenCalledTimes(1);
 
-        harness.loaders[0].abort();
+        (harness.components[0] as TokenReportOverlay).handleInput('\x1b');
         await first;
         idle.resolve();
     });
 
-    it('remains active until the report overlay closes', async () => {
+    it('remains active until the loaded report modal closes', async () => {
         const provider = { load: vi.fn(async () => report) };
         const harness = createContext('tui', { autoCloseOverlay: false });
-        const handler = handlerWithFakeLoader(provider, harness);
+        const handler = createHandler(provider);
         const first = handler('', harness.ctx);
-        await vi.waitFor(() => expect(harness.custom).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(provider.load).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() =>
+            expect(harness.components[0]?.render(76).join('\n')).toContain('Historical token usage')
+        );
 
         await handler('', harness.ctx);
         expect(provider.load).toHaveBeenCalledTimes(1);
-        expect(harness.custom).toHaveBeenCalledTimes(2);
+        expect(harness.custom).toHaveBeenCalledTimes(1);
 
         harness.closeOverlay();
         await first;

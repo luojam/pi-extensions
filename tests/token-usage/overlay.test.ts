@@ -25,6 +25,46 @@ function keybindings(keys: string[]): TokenReportOverlayKeybindings {
 }
 
 describe('TokenReportOverlay', () => {
+    it('shows a cancellable loader inside the modal until a report is available', () => {
+        const done = vi.fn();
+        const overlay = new TokenReportOverlay(undefined, theme, keybindings(['ctrl+x']), done);
+        const lines = overlay.render(76).map(stripTerminalSequences);
+
+        expect(lines[0]).toMatch(/^╭─+╮$/);
+        expect(lines.at(-1)).toMatch(/^╰─+╯$/);
+        expect(lines.join('\n')).toContain('Loading token usage...');
+
+        overlay.handleInput('configured-cancel');
+
+        expect(overlay.signal.aborted).toBe(true);
+        expect(done).toHaveBeenCalledWith('cancelled');
+    });
+
+    it('keeps a failed overlay mounted until the user closes it', () => {
+        const done = vi.fn();
+        const requestRender = vi.fn();
+        const overlay = new TokenReportOverlay(
+            undefined,
+            theme,
+            keybindings(['ctrl+x']),
+            done,
+            undefined,
+            requestRender
+        );
+
+        overlay.fail();
+
+        expect(done).not.toHaveBeenCalled();
+        expect(requestRender).toHaveBeenCalledOnce();
+        expect(stripTerminalSequences(overlay.render(76).join('\n'))).toContain(
+            'Unable to load token report.'
+        );
+
+        overlay.handleInput('configured-cancel');
+
+        expect(done).toHaveBeenCalledWith('failed');
+    });
+
     it.each(['default', 'zero', 'formatting-edge'] as const)(
         'keeps every %s report line within the supplied width',
         async (variant) => {
