@@ -5,11 +5,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
     extractSessionEntries,
     parseSessionFile,
-} from '../../extensions/token-usage/session-parser.ts';
+} from '../../extensions/mytokens/session-parser.ts';
 import {
     mergeCurrentSessionSnapshot,
     reconcileUsageEvents,
-} from '../../extensions/token-usage/subagent-reconciliation.ts';
+} from '../../extensions/mytokens/subagent-reconciliation.ts';
 
 const temporaryDirectories: string[] = [];
 
@@ -132,7 +132,7 @@ describe('subagent reconciliation', () => {
     });
 
     it('canonicalizes a symlinked child reference before authoritative reconciliation', async () => {
-        const directory = await mkdtemp(join(tmpdir(), 'token-usage-link-'));
+        const directory = await mkdtemp(join(tmpdir(), 'mytokens-link-'));
         temporaryDirectories.push(directory);
         const childFile = join(directory, 'child.jsonl');
         const childAlias = join(directory, 'child-alias.jsonl');
@@ -310,7 +310,7 @@ describe('subagent reconciliation', () => {
 
 describe('current-session merge', () => {
     it('deduplicates a persisted manager snapshot against the same disk entries', async () => {
-        const directory = await mkdtemp(join(tmpdir(), 'token-usage-current-'));
+        const directory = await mkdtemp(join(tmpdir(), 'mytokens-current-'));
         temporaryDirectories.push(directory);
         const file = join(directory, 'current.jsonl');
         const entry = assistant('same-entry', 5);
@@ -369,7 +369,7 @@ describe('current-session merge', () => {
     });
 
     it('resolves relative subagent links from an ephemeral snapshot directory', async () => {
-        const directory = await mkdtemp(join(tmpdir(), 'token-usage-ephemeral-'));
+        const directory = await mkdtemp(join(tmpdir(), 'mytokens-ephemeral-'));
         temporaryDirectories.push(directory);
         const childFile = join(directory, 'child.jsonl');
         await writeFile(childFile, '');

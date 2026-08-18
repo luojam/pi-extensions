@@ -1,8 +1,8 @@
 import type {
     TokenReportProvider,
     TokenReportRequest,
-} from '../../extensions/token-usage/provider.ts';
-import type { TokenReport, TokenUsageSummary } from '../../extensions/token-usage/types.ts';
+} from '../../extensions/mytokens/provider.ts';
+import type { TokenReport, TokenUsageSummary } from '../../extensions/mytokens/types.ts';
 
 export type SampleTokenReportVariant = 'default' | 'zero' | 'formatting-edge';
 

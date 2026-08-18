@@ -5,12 +5,12 @@ import {
     recordedCostUsdFromUsage,
     subagentShare,
     tokenComponentsFromUsage,
-} from '../../extensions/token-usage/accounting.ts';
+} from '../../extensions/mytokens/accounting.ts';
 import type {
     TokenComponents,
     TokenUsageSummary,
     UsageEvent,
-} from '../../extensions/token-usage/types.ts';
+} from '../../extensions/mytokens/types.ts';
 
 const components = (input: number): TokenComponents => ({
     input,

@@ -4,12 +4,12 @@ import {
     formatCompactCount,
     formatTokenShare,
     formatUsdCost,
-} from '../../extensions/token-usage/format.ts';
+} from '../../extensions/mytokens/format.ts';
 import {
     TokenReportOverlay,
     type TokenReportOverlayKeybindings,
     type TokenReportOverlayTheme,
-} from '../../extensions/token-usage/overlay.ts';
+} from '../../extensions/mytokens/overlay.ts';
 import { createSampleTokenReportProvider } from './sample-report-provider.ts';
 
 const theme: TokenReportOverlayTheme = {

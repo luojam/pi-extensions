@@ -2,21 +2,21 @@ import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { discoverSessionFiles } from '../../extensions/token-usage/session-discovery.ts';
+import { discoverSessionFiles } from '../../extensions/mytokens/session-discovery.ts';
 import {
     extractSessionEntries,
     parseSessionFile,
     scanSessionFiles,
-} from '../../extensions/token-usage/session-parser.ts';
+} from '../../extensions/mytokens/session-parser.ts';
 import {
     deduplicateUsageEvents,
     reconcileUsageEvents,
-} from '../../extensions/token-usage/subagent-reconciliation.ts';
+} from '../../extensions/mytokens/subagent-reconciliation.ts';
 
 const temporaryDirectories: string[] = [];
 
 async function temporaryDirectory(): Promise<string> {
-    const directory = await mkdtemp(join(tmpdir(), 'token-usage-'));
+    const directory = await mkdtemp(join(tmpdir(), 'mytokens-'));
     temporaryDirectories.push(directory);
     return directory;
 }

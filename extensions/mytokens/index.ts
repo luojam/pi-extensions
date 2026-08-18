@@ -2,7 +2,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { createTokensHandler } from './command.ts';
 import { createTokenReportProvider } from './provider.ts';
 
-export default function tokenUsageExtension(pi: ExtensionAPI): void {
+export default function mytokensExtension(pi: ExtensionAPI): void {
     const provider = createTokenReportProvider();
 
     pi.registerCommand('tokens', {

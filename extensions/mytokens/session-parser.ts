@@ -91,7 +91,7 @@ function messageTimestamp(
 export function accountingFingerprint(input: FingerprintInput): string {
     const components = input.components;
     const stableTuple = [
-        'token-usage-accounting-v1',
+        'mytokens-accounting-v1',
         input.carrier,
         input.role ?? null,
         input.entryId ?? null,
