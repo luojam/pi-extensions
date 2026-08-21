@@ -44,7 +44,7 @@ Replaces the default footer with a responsive view of:
 
 - working directory, Git branch, and session name
 - elapsed agent time, provider, model, and thinking level
-- context tokens, window size, and percentage warnings
+- context tokens, window size, and percentage warnings. Startup estimate is marked with `~`.
 - status text published by other extensions
 - remaining long-window Codex usage and reset time
 

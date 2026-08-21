@@ -8,6 +8,7 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import type { UsageLimit } from './codex-usage.ts';
+import { getFooterContextUsage } from './context-usage.ts';
 
 const USAGE_BAR_WIDTH = 10;
 
@@ -38,7 +39,7 @@ export function renderFooter({
             theme,
             true
         ),
-        frameLine(renderStats(contentWidth, theme, ctx, usageLimit), width, theme, false),
+        frameLine(renderStats(contentWidth, theme, ctx, pi, usageLimit), width, theme, false),
     ];
 
     const statuses = [...footerData.getExtensionStatuses().entries()]
@@ -93,16 +94,18 @@ function renderStats(
     width: number,
     theme: Theme,
     ctx: ExtensionContext,
+    pi: ExtensionAPI,
     usageLimit: UsageLimit
 ): string {
-    const usage = ctx.getContextUsage();
+    const usage = getFooterContextUsage(ctx, pi);
     const contextWindow = usage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
     const contextTokens = usage?.tokens;
     const contextPercent = usage?.percent;
+    const estimateMarker = usage?.isStartupEstimate ? '~' : '';
     const contextText =
         contextTokens === null || contextTokens === undefined
             ? `?/${formatTokens(contextWindow)}•?%`
-            : `${formatTokens(contextTokens)}/${formatTokens(contextWindow)} (${formatPercent(contextPercent)}%)`;
+            : `${estimateMarker}${formatTokens(contextTokens)}/${formatTokens(contextWindow)} (${estimateMarker}${formatPercent(contextPercent)}%)`;
     const themedContext =
         contextPercent !== null && contextPercent !== undefined && contextPercent > 90
             ? theme.fg('error', contextText)
