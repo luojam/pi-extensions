@@ -8,9 +8,18 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import type { UsageLimit } from './codex-usage.ts';
-import { getFooterContextUsage } from './context-usage.ts';
+import type { FooterContextUsage } from './context-usage.ts';
 
 const USAGE_BAR_WIDTH = 10;
+const SPINNER_INTERVAL_MS = 80;
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+export function getSpinnerFrame(elapsedMs: number): string {
+    return (
+        SPINNER_FRAMES[Math.floor(elapsedMs / SPINNER_INTERVAL_MS) % SPINNER_FRAMES.length] ??
+        SPINNER_FRAMES[0]
+    );
+}
 
 interface RenderFooterOptions {
     width: number;
@@ -19,7 +28,10 @@ interface RenderFooterOptions {
     ctx: ExtensionContext;
     pi: ExtensionAPI;
     usageLimit: UsageLimit;
+    contextUsage: FooterContextUsage | undefined;
+    sessionName: string | undefined;
     elapsedMs: number;
+    working: boolean;
 }
 
 export function renderFooter({
@@ -29,17 +41,25 @@ export function renderFooter({
     ctx,
     pi,
     usageLimit,
+    contextUsage,
+    sessionName,
     elapsedMs,
+    working,
 }: RenderFooterOptions): string[] {
     const contentWidth = Math.max(0, width - 6);
     const lines = [
         frameLine(
-            renderHeader(contentWidth, theme, footerData, ctx, pi, elapsedMs),
+            renderHeader(contentWidth, theme, footerData, ctx, pi, sessionName, elapsedMs, working),
             width,
             theme,
             true
         ),
-        frameLine(renderStats(contentWidth, theme, ctx, pi, usageLimit), width, theme, false),
+        frameLine(
+            renderStats(contentWidth, theme, ctx, usageLimit, contextUsage),
+            width,
+            theme,
+            false
+        ),
     ];
 
     const statuses = [...footerData.getExtensionStatuses().entries()]
@@ -58,7 +78,9 @@ function renderHeader(
     footerData: ReadonlyFooterDataProvider,
     ctx: ExtensionContext,
     pi: ExtensionAPI,
-    elapsedMs: number
+    sessionName: string | undefined,
+    elapsedMs: number,
+    working: boolean
 ): string {
     const modelName = ctx.model?.id ?? 'no-model';
     const thinking = ctx.model?.reasoning ? pi.getThinkingLevel() : undefined;
@@ -68,10 +90,14 @@ function renderHeader(
           )}`
         : modelName;
     const elapsed = formatElapsed(elapsedMs);
-    const elapsedAndModel = `${elapsed} ─ ${modelAndThinking}`;
+    const spinner = working ? `${theme.fg('accent', getSpinnerFrame(elapsedMs))} ` : '';
+    const elapsedAndModel = `${spinner}${theme.fg('dim', `${elapsed} ─ ${modelAndThinking}`)}`;
     let modelDisplay =
         footerData.getAvailableProviderCount() > 1 && ctx.model
-            ? `${elapsed} ─ (${ctx.model.provider}) ${modelAndThinking}`
+            ? `${spinner}${theme.fg(
+                  'dim',
+                  `${elapsed} ─ (${ctx.model.provider}) ${modelAndThinking}`
+              )}`
             : elapsedAndModel;
 
     const cwd = formatCwd(ctx.sessionManager.getCwd());
@@ -80,7 +106,6 @@ function renderHeader(
     if (branch) {
         cwdDisplay += theme.fg('dim', ' [') + theme.fg('text', branch) + theme.fg('dim', ']');
     }
-    const sessionName = ctx.sessionManager.getSessionName();
     if (sessionName) cwdDisplay += theme.fg('dim', ` ─ ${sessionName}`);
 
     if (visibleWidth(cwdDisplay) + 2 + visibleWidth(modelDisplay) > width && ctx.model) {
@@ -94,10 +119,9 @@ function renderStats(
     width: number,
     theme: Theme,
     ctx: ExtensionContext,
-    pi: ExtensionAPI,
-    usageLimit: UsageLimit
+    usageLimit: UsageLimit,
+    usage: FooterContextUsage | undefined
 ): string {
-    const usage = getFooterContextUsage(ctx, pi);
     const contextWindow = usage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
     const contextTokens = usage?.tokens;
     const contextPercent = usage?.percent;
@@ -165,7 +189,7 @@ function alignContent(left: string, right: string, width: number, theme: Theme):
     const availableRight = width - leftWidth - 2;
     right = availableRight > 0 ? truncateToWidth(right, availableRight, '') : '';
     const padding = ' '.repeat(Math.max(0, width - leftWidth - visibleWidth(right)));
-    return left + theme.fg('dim', padding + right);
+    return left + theme.fg('dim', padding) + right;
 }
 
 function frameLine(content: string, width: number, theme: Theme, top: boolean): string {

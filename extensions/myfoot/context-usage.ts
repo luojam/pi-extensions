@@ -16,11 +16,10 @@ export function getFooterContextUsage(
 ): FooterContextUsage | undefined {
     const usage = ctx.getContextUsage();
     if (!usage) return undefined;
+    if (usage.tokens === null) return { ...usage, isStartupEstimate: false };
 
     const hasProviderUsage = getLastAssistantUsage(ctx.sessionManager.getBranch()) !== undefined;
-    if (usage.tokens === null || hasProviderUsage) {
-        return { ...usage, isStartupEstimate: false };
-    }
+    if (hasProviderUsage) return { ...usage, isStartupEstimate: false };
 
     const startupTokens = estimateStartupContextTokens(
         ctx.getSystemPrompt(),
