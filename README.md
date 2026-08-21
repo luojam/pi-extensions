@@ -4,7 +4,7 @@ Three TUI extensions for [Pi](https://github.com/earendil-works/pi): a compact s
 
 | Extension | Purpose |
 | --- | --- |
-| [`myhead`](extensions/myhead) | Compact startup header and keybinding guide |
+| [`myhead`](extensions/myhead) | Compact startup header and shortcut hints |
 | [`myfoot`](extensions/myfoot) | Session, context, model, and Codex usage footer |
 | [`mytokens`](extensions/mytokens) | Read-only historical token report via `/tokens` |
 
@@ -24,7 +24,7 @@ pi -e ./extensions/myhead/index.ts
 
 ## `myhead`
 
-Replaces Pi's startup header with a theme-aware logo, version, and shortcut guide.
+Replaces Pi's startup header with a theme-aware logo, version, and compact shortcut hints.
 
 ```text
   ██████
@@ -36,7 +36,7 @@ pi v…
 esc interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
 ```
 
-The compact view shows one line of hints. Pi's tool-expansion binding—`ctrl+o` by default—reveals the full guide and loaded resources. Displayed shortcuts follow the user's keybindings.
+The header keeps this single line of hints when tool output is expanded. Use `/hotkeys` for the full keybinding list. Displayed shortcuts follow the user's keybindings.
 
 ## `myfoot`
 
