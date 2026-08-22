@@ -11,15 +11,6 @@ import type { UsageLimit } from './codex-usage.ts';
 import type { FooterContextUsage } from './context-usage.ts';
 
 const USAGE_BAR_WIDTH = 10;
-const SPINNER_INTERVAL_MS = 80;
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-export function getSpinnerFrame(elapsedMs: number): string {
-    return (
-        SPINNER_FRAMES[Math.floor(elapsedMs / SPINNER_INTERVAL_MS) % SPINNER_FRAMES.length] ??
-        SPINNER_FRAMES[0]
-    );
-}
 
 interface RenderFooterOptions {
     width: number;
@@ -29,9 +20,7 @@ interface RenderFooterOptions {
     pi: ExtensionAPI;
     usageLimit: UsageLimit;
     contextUsage: FooterContextUsage | undefined;
-    sessionName: string | undefined;
     elapsedMs: number;
-    working: boolean;
 }
 
 export function renderFooter({
@@ -42,14 +31,12 @@ export function renderFooter({
     pi,
     usageLimit,
     contextUsage,
-    sessionName,
     elapsedMs,
-    working,
 }: RenderFooterOptions): string[] {
     const contentWidth = Math.max(0, width - 6);
     const lines = [
         frameLine(
-            renderHeader(contentWidth, theme, footerData, ctx, pi, sessionName, elapsedMs, working),
+            renderHeader(contentWidth, theme, footerData, ctx, pi, elapsedMs),
             width,
             theme,
             true
@@ -78,9 +65,7 @@ function renderHeader(
     footerData: ReadonlyFooterDataProvider,
     ctx: ExtensionContext,
     pi: ExtensionAPI,
-    sessionName: string | undefined,
-    elapsedMs: number,
-    working: boolean
+    elapsedMs: number
 ): string {
     const modelName = ctx.model?.id ?? 'no-model';
     const thinking = ctx.model?.reasoning ? pi.getThinkingLevel() : undefined;
@@ -90,14 +75,10 @@ function renderHeader(
           )}`
         : modelName;
     const elapsed = formatElapsed(elapsedMs);
-    const spinner = working ? `${theme.fg('accent', getSpinnerFrame(elapsedMs))} ` : '';
-    const elapsedAndModel = `${spinner}${theme.fg('dim', `${elapsed} ─ ${modelAndThinking}`)}`;
+    const elapsedAndModel = theme.fg('dim', `${elapsed} ─ ${modelAndThinking}`);
     let modelDisplay =
         footerData.getAvailableProviderCount() > 1 && ctx.model
-            ? `${spinner}${theme.fg(
-                  'dim',
-                  `${elapsed} ─ (${ctx.model.provider}) ${modelAndThinking}`
-              )}`
+            ? theme.fg('dim', `${elapsed} ─ (${ctx.model.provider}) ${modelAndThinking}`)
             : elapsedAndModel;
 
     const cwd = formatCwd(ctx.sessionManager.getCwd());
@@ -106,6 +87,7 @@ function renderHeader(
     if (branch) {
         cwdDisplay += theme.fg('dim', ' [') + theme.fg('text', branch) + theme.fg('dim', ']');
     }
+    const sessionName = ctx.sessionManager.getSessionName();
     if (sessionName) cwdDisplay += theme.fg('dim', ` ─ ${sessionName}`);
 
     if (visibleWidth(cwdDisplay) + 2 + visibleWidth(modelDisplay) > width && ctx.model) {
