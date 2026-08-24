@@ -133,7 +133,7 @@ function formatUsageLimit(usage: UsageLimit, availableWidth: number): string {
     if (!usage.resetAt) return base;
 
     const reset = formatResetDuration(usage.resetAt);
-    const variants = [`${base} · resets in ${reset.full}`, `${base} ↻${reset.compact}`, base];
+    const variants = [`${base} · ${reset.full}`, `${base} · ${reset.compact}`, base];
     return variants.find((variant) => visibleWidth(variant) <= availableWidth) ?? base;
 }
 
