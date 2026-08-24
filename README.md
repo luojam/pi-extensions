@@ -40,7 +40,14 @@ The header keeps this single line of hints when tool output is expanded. Use `/h
 
 ## `myfoot`
 
-Replaces the default footer with a responsive view of:
+Replaces the default footer with a responsive two-line view:
+
+```text
+╭─ ~/project [main]                                   1m 23s ─ gpt-5.6-sol ─ high ─╮
+╰─ W ███████░░░ 74% · 4d 3h                                        42k/272k (16%) ─╯
+```
+
+It shows:
 
 - working directory, Git branch, and session name
 - elapsed agent time, provider, model, and thinking level
