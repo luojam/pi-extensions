@@ -8,7 +8,7 @@ import { mergeCurrentSessionSnapshot, reconcileUsageEvents } from './subagent-re
 
 export interface SessionReportProviderOptions {
     /** Override only for deterministic tests; production uses Pi's agent directory. */
-    defaultSessionRoot?: string;
+    agentDirectory?: string;
     parseConcurrency?: number;
 }
 
@@ -16,14 +16,17 @@ export interface SessionReportProviderOptions {
 export function createSessionReportProvider(
     options: SessionReportProviderOptions = {}
 ): TokenReportProvider {
-    const defaultSessionRoot = options.defaultSessionRoot ?? join(getAgentDir(), 'sessions');
+    const agentDirectory = options.agentDirectory ?? getAgentDir();
 
     return {
         async load(request) {
             const { signal } = request;
             signal.throwIfAborted();
 
-            const roots = [defaultSessionRoot];
+            const roots = [
+                join(agentDirectory, 'sessions'),
+                join(agentDirectory, 'pi-subagents', 'sessions'),
+            ];
             if (request.currentSession.directory.trim().length > 0) {
                 roots.push(request.currentSession.directory);
             }

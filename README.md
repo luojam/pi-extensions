@@ -83,6 +83,6 @@ Example report:
 
 Totals include input, output, cache-read, and cache-write tokens. Period rows show processed tokens, recorded cost, and the token share attributed to subagents. Lifetime means discoverable local history—not provider billing history—and costs are recorded values, not estimates.
 
-The scanner includes the active session, reconciles subagent rollups, and deduplicates copied history from forks and clones. It makes no network requests and never modifies session files.
+The scanner reads `<agent-dir>/sessions/` and `<agent-dir>/pi-subagents/sessions/`, plus the active session. It reconciles subagent rollups and deduplicates copied history from forks and clones. It makes no network requests and never modifies session files.
 
 All extensions are TUI-only. Pi loads the TypeScript sources directly; no build step is required.

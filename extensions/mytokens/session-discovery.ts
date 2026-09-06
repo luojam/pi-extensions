@@ -5,7 +5,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 export interface DiscoveredSessionFile {
     /** Canonical absolute path. */
     path: string;
-    /** Whether the file is physically beneath a directory named `subagents`. */
+    /** Whether the file is physically in a `pi-subagents/sessions/` transcript tree. */
     isSubagentFile: boolean;
 }
 
@@ -22,8 +22,10 @@ function isWithin(parent: string, candidate: string): boolean {
     return child === '' || (child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child));
 }
 
-function isSubagentPath(path: string): boolean {
-    return path.split(sep).includes('subagents');
+/** Recognize `pi-subagents/sessions/` transcript trees. */
+export function isSubagentPath(path: string): boolean {
+    const parts = path.split(sep);
+    return parts.some((part, index) => part === 'pi-subagents' && parts[index + 1] === 'sessions');
 }
 
 /**

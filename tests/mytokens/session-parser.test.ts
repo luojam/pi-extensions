@@ -71,9 +71,9 @@ describe('session discovery', () => {
         ]);
     });
 
-    it('marks files beneath a subagents directory', async () => {
+    it('marks files beneath pi-subagents/sessions', async () => {
         const root = await temporaryDirectory();
-        const directory = join(root, 'sessions', 'subagents');
+        const directory = join(root, 'pi-subagents', 'sessions');
         await mkdir(directory, { recursive: true });
         await writeFile(join(directory, 'child.jsonl'), '');
 
@@ -225,9 +225,9 @@ describe('streaming session parsing', () => {
         expect(parsed).toHaveLength(1);
     });
 
-    it('classifies a string path beneath subagents when discovery metadata is absent', async () => {
+    it('classifies a string path beneath pi-subagents/sessions when discovery metadata is absent', async () => {
         const root = await temporaryDirectory();
-        const directory = join(root, 'sessions', 'subagents');
+        const directory = join(root, 'pi-subagents', 'sessions');
         const file = join(directory, 'child.jsonl');
         await mkdir(directory, { recursive: true });
         await writeJsonl(file, [

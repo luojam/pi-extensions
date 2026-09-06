@@ -106,7 +106,7 @@ function request(
 describe('session report provider', () => {
     it('scans the default and custom active roots and deduplicates the manager snapshot', async () => {
         const root = await temporaryDirectory();
-        const defaultRoot = join(root, 'default-sessions');
+        const defaultRoot = join(root, 'sessions');
         const activeDirectory = join(root, 'custom-sessions');
         const defaultFile = join(defaultRoot, 'project', 'default.jsonl');
         const currentFile = join(activeDirectory, 'current.jsonl');
@@ -114,7 +114,7 @@ describe('session report provider', () => {
         const latestEntry = assistant('latest-entry', 4);
         await writeSession(defaultFile, 'default', [assistant('default-entry', 1)]);
         await writeSession(currentFile, 'current', [currentEntry]);
-        const provider = createSessionReportProvider({ defaultSessionRoot: defaultRoot });
+        const provider = createSessionReportProvider({ agentDirectory: root });
 
         const report = await provider.load(
             request(activeDirectory, [currentEntry, latestEntry], currentFile)
@@ -133,45 +133,54 @@ describe('session report provider', () => {
         expect(report.periods.thirtyDays).toEqual(report.periods.lifetime);
     });
 
-    it('reconciles authoritative, fallback, and unreferenced subagent files end to end', async () => {
-        const root = await temporaryDirectory();
-        const sessionRoot = join(root, 'sessions');
-        const subagents = join(sessionRoot, 'subagents');
-        await writeSession(join(sessionRoot, 'parent.jsonl'), 'parent', [
-            subagentResult('rollup', 'subagents/authoritative.jsonl', 'authoritative', 10),
-            subagentResult('fallback', 'subagents/fallback.jsonl', 'fallback'),
-        ]);
-        await writeSession(join(subagents, 'authoritative.jsonl'), 'authoritative', [
-            assistant('suppressed-work', 9),
-        ]);
-        await writeSession(join(subagents, 'fallback.jsonl'), 'fallback', [
-            assistant('fallback-work', 4),
-        ]);
-        await writeSession(join(subagents, 'orphan.jsonl'), 'orphan', [
-            assistant('orphan-work', 3),
-        ]);
-        const provider = createSessionReportProvider({ defaultSessionRoot: sessionRoot });
+    it.each(['current', 'migrated'])(
+        'reconciles authoritative, fallback, and unreferenced subagent files (%s)',
+        async (location) => {
+            const root = await temporaryDirectory();
+            const sessionRoot = join(root, 'sessions');
+            const subagents = join(root, 'pi-subagents', 'sessions');
+            // Migration moves transcripts but leaves the parent's recorded paths unchanged.
+            const referenceRoot =
+                location === 'current' ? subagents : join(sessionRoot, 'subagents');
+            await writeSession(join(sessionRoot, 'parent.jsonl'), 'parent', [
+                subagentResult(
+                    'rollup',
+                    join(referenceRoot, 'authoritative.jsonl'),
+                    'authoritative',
+                    10
+                ),
+                subagentResult('fallback', join(referenceRoot, 'fallback.jsonl'), 'fallback'),
+            ]);
+            await writeSession(join(subagents, 'authoritative.jsonl'), 'authoritative', [
+                assistant('suppressed-work', 9),
+            ]);
+            await writeSession(join(subagents, 'fallback.jsonl'), 'fallback', [
+                assistant('fallback-work', 4),
+            ]);
+            await writeSession(join(subagents, 'orphan.jsonl'), 'orphan', [
+                assistant('orphan-work', 3),
+            ]);
+            const provider = createSessionReportProvider({ agentDirectory: root });
 
-        const report = await provider.load(request(sessionRoot));
+            const report = await provider.load(request(sessionRoot));
 
-        expect(report.periods.lifetime).toEqual({
-            input: 17,
-            output: 20,
-            cacheRead: 23,
-            cacheWrite: 26,
-            recordedCostUsd: 1.7,
-            subagentProcessed: 86,
-        });
-    });
+            expect(report.periods.lifetime).toEqual({
+                input: 17,
+                output: 20,
+                cacheRead: 23,
+                cacheWrite: 26,
+                recordedCostUsd: 1.7,
+                subagentProcessed: 86,
+            });
+        }
+    );
 
     it('does not treat an empty in-memory session directory as the process directory', async () => {
         const root = await temporaryDirectory();
         await writeSession(join(root, 'unrelated.jsonl'), 'decoy', [
             assistant('unrelated-entry', 90),
         ]);
-        const provider = createSessionReportProvider({
-            defaultSessionRoot: join(root, 'missing-default'),
-        });
+        const provider = createSessionReportProvider({ agentDirectory: root });
         const previousCwd = process.cwd();
 
         try {
@@ -185,9 +194,7 @@ describe('session report provider', () => {
 
     it('returns a normal zero report for missing stores', async () => {
         const root = await temporaryDirectory();
-        const provider = createSessionReportProvider({
-            defaultSessionRoot: join(root, 'missing-default'),
-        });
+        const provider = createSessionReportProvider({ agentDirectory: root });
 
         const report = await provider.load(request(join(root, 'missing-active')));
 
@@ -201,9 +208,7 @@ describe('session report provider', () => {
 
     it('includes active ephemeral usage', async () => {
         const root = await temporaryDirectory();
-        const provider = createSessionReportProvider({
-            defaultSessionRoot: join(root, 'missing-default'),
-        });
+        const provider = createSessionReportProvider({ agentDirectory: root });
 
         const report = await provider.load(request(root, [assistant('ephemeral-entry', 6)]));
 
@@ -214,7 +219,7 @@ describe('session report provider', () => {
     it('propagates cancellation after a real scan starts', async () => {
         const root = await temporaryDirectory();
         const controller = new AbortController();
-        const provider = createSessionReportProvider({ defaultSessionRoot: root });
+        const provider = createSessionReportProvider({ agentDirectory: root });
 
         const loading = provider.load(request(root, [], undefined, controller.signal));
         controller.abort();
@@ -222,11 +227,14 @@ describe('session report provider', () => {
         await expect(loading).rejects.toMatchObject({ name: 'AbortError' });
     });
 
-    it.sequential('uses the production factory and Pi agent session root', async () => {
+    it.sequential('uses the production factory and both Pi agent session roots', async () => {
         const root = await temporaryDirectory();
         const sessionRoot = join(root, 'sessions');
         await writeSession(join(sessionRoot, 'project', 'production.jsonl'), 'production', [
             assistant('production-entry', 5),
+        ]);
+        await writeSession(join(root, 'pi-subagents', 'sessions', 'orphan.jsonl'), 'orphan', [
+            assistant('orphan-entry', 3),
         ]);
         const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
         process.env.PI_CODING_AGENT_DIR = root;
@@ -235,7 +243,8 @@ describe('session report provider', () => {
             const report = await createTokenReportProvider().load(
                 request(join(root, 'missing-active'))
             );
-            expect(report.periods.lifetime.input).toBe(5);
+            expect(report.periods.lifetime.input).toBe(8);
+            expect(report.periods.lifetime.subagentProcessed).toBe(18);
         } finally {
             if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
             else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -251,7 +260,7 @@ describe('session report provider', () => {
                 return Reflect.get(target, property, receiver);
             },
         });
-        const provider = createSessionReportProvider({ defaultSessionRoot: root });
+        const provider = createSessionReportProvider({ agentDirectory: root });
 
         await expect(provider.load(request(root, badEntries))).rejects.toBe(expected);
     });

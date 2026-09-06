@@ -1,10 +1,11 @@
 import { realpath } from 'node:fs/promises';
-import { isAbsolute, resolve, sep } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import {
     type CooperativeWorkOptions,
     createWorkCheckpoint,
     type WorkCheckpoint,
 } from './cooperative-work.ts';
+import { isSubagentPath } from './session-discovery.ts';
 import type { ExtractedSession, ExtractedUsageEvent, SubagentReference } from './session-parser.ts';
 import {
     canonicalizeSubagentReferences,
@@ -17,10 +18,6 @@ export interface CurrentSessionSnapshot {
     file?: string;
     directory: string;
     entries: readonly unknown[];
-}
-
-function isSubagentPath(path: string): boolean {
-    return path.split(sep).includes('subagents');
 }
 
 /** Add a manager snapshot as another physical view of the current session. */

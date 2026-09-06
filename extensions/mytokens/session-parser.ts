@@ -1,19 +1,15 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, type ReadStream } from 'node:fs';
 import { realpath } from 'node:fs/promises';
-import { dirname, isAbsolute, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { recordedCostUsdFromUsage, tokenComponentsFromUsage } from './accounting.ts';
 import { type CooperativeWorkOptions, createWorkCheckpoint } from './cooperative-work.ts';
-import type { DiscoveredSessionFile } from './session-discovery.ts';
+import { type DiscoveredSessionFile, isSubagentPath } from './session-discovery.ts';
 import type { TokenComponents, UsageEvent, UsageOrigin } from './types.ts';
 
 const MAX_SUPPORTED_SESSION_VERSION = 3;
 const DEFAULT_PARSE_CONCURRENCY = 4;
 const MAX_JSONL_LINE_BYTES = 64 * 1024 * 1024;
-
-function isSubagentPath(path: string): boolean {
-    return path.split(sep).includes('subagents');
-}
 
 export interface ExtractedUsageEvent extends UsageEvent {
     sourceKey: string;

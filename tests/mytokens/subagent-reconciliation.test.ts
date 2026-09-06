@@ -1,4 +1,4 @@
-import { mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -309,33 +309,42 @@ describe('subagent reconciliation', () => {
 });
 
 describe('current-session merge', () => {
-    it('deduplicates a persisted manager snapshot against the same disk entries', async () => {
-        const directory = await mkdtemp(join(tmpdir(), 'mytokens-current-'));
-        temporaryDirectories.push(directory);
-        const file = join(directory, 'current.jsonl');
-        const entry = assistant('same-entry', 5);
-        await writeFile(
-            file,
-            `${JSON.stringify({
-                type: 'session',
-                version: 3,
+    it.each([false, true])(
+        'deduplicates a persisted snapshot (subagent: %s)',
+        async (isSubagent) => {
+            const root = await mkdtemp(join(tmpdir(), 'mytokens-current-'));
+            temporaryDirectories.push(root);
+            const directory = isSubagent ? join(root, 'pi-subagents', 'sessions') : root;
+            await mkdir(directory, { recursive: true });
+            const file = join(directory, 'current.jsonl');
+            const entry = assistant('same-entry', 5);
+            await writeFile(
+                file,
+                `${JSON.stringify({
+                    type: 'session',
+                    version: 3,
+                    id: 'current',
+                    timestamp: '2025-01-01T00:00:00.000Z',
+                    cwd: '/synthetic',
+                })}\n${JSON.stringify(entry)}\n`
+            );
+            const disk = await parseSessionFile(file);
+            expect(disk).not.toBeNull();
+            expect(disk?.isSubagentFile).toBe(isSubagent);
+
+            const merged = await mergeCurrentSessionSnapshot(disk === null ? [] : [disk], {
                 id: 'current',
-                timestamp: '2025-01-01T00:00:00.000Z',
-                cwd: '/synthetic',
-            })}\n${JSON.stringify(entry)}\n`
-        );
-        const disk = await parseSessionFile(file);
-        expect(disk).not.toBeNull();
+                file,
+                directory,
+                entries: [entry],
+            });
 
-        const merged = await mergeCurrentSessionSnapshot(disk === null ? [] : [disk], {
-            id: 'current',
-            file,
-            directory,
-            entries: [entry],
-        });
-
-        expect(await reconcileUsageEvents(merged)).toHaveLength(1);
-    });
+            expect(merged[1].isSubagentFile).toBe(isSubagent);
+            const events = await reconcileUsageEvents(merged);
+            expect(events).toHaveLength(1);
+            expect(events[0].origin).toBe(isSubagent ? 'subagent' : 'assistant');
+        }
+    );
 
     it('includes an ephemeral snapshot', async () => {
         const merged = await mergeCurrentSessionSnapshot([], {
