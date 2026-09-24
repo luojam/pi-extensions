@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createTokenReportProvider } from '../../extensions/mytokens/provider.ts';
 import { createSessionReportProvider } from '../../extensions/mytokens/session-report-provider.ts';
@@ -131,6 +132,54 @@ describe('session report provider', () => {
         expect(report.periods.today).toEqual(report.periods.lifetime);
         expect(report.periods.sevenDays).toEqual(report.periods.lifetime);
         expect(report.periods.thirtyDays).toEqual(report.periods.lifetime);
+    });
+
+    it('counts standalone usage of any kind, deduplicates copies, and attributes child usage', async () => {
+        const root = await temporaryDirectory();
+        const sessionRoot = join(root, 'sessions');
+        const currentFile = join(sessionRoot, 'current.jsonl');
+        const cacheWarm: SessionEntry = {
+            type: 'usage',
+            id: 'cache-warm',
+            parentId: null,
+            timestamp: '2025-01-02T12:00:00.000Z',
+            kind: 'cache_warm',
+            provider: 'anthropic',
+            model: 'claude-sonnet-4-5',
+            usage: {
+                input: 0,
+                output: 0,
+                cacheRead: 50_000,
+                cacheWrite: 0,
+                totalTokens: 50_000,
+                cost: { input: 0, output: 0, cacheRead: 0.015, cacheWrite: 0, total: 0.015 },
+            },
+        };
+        await writeSession(currentFile, 'current', [cacheWarm]);
+        await writeSession(join(sessionRoot, 'clone.jsonl'), 'clone', [
+            { ...cacheWarm, parentId: 'reparented' },
+        ]);
+        await writeSession(join(root, 'pi-subagents', 'sessions', 'child.jsonl'), 'child', [
+            { ...cacheWarm, id: 'child-usage', kind: 'future_operation' },
+        ]);
+        const provider = createSessionReportProvider({ agentDirectory: root });
+
+        const report = await provider.load(request(sessionRoot, [cacheWarm], currentFile));
+
+        const expected = {
+            input: 0,
+            output: 0,
+            cacheRead: 100_000,
+            cacheWrite: 0,
+            recordedCostUsd: 0.03,
+            subagentProcessed: 50_000,
+        };
+        expect(report.periods).toEqual({
+            today: expected,
+            sevenDays: expected,
+            thirtyDays: expected,
+            lifetime: expected,
+        });
     });
 
     it.each(['current', 'migrated'])(

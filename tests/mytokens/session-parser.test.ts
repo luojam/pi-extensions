@@ -142,6 +142,21 @@ describe('streaming session parsing', () => {
                 usage: usage(4),
             },
             {
+                type: 'usage',
+                id: 'usage-id',
+                parentId: 'branch-id',
+                timestamp: '2025-01-02T04:30:00.000Z',
+                kind: 'cache_warm',
+                provider: 'provider',
+                model: 'model',
+                usage: usage(5),
+            },
+            {
+                type: 'usage',
+                id: 'invalid-usage-id',
+                usage: { ...usage(10), cacheRead: -1 },
+            },
+            {
                 type: 'message',
                 id: 'invalid-id',
                 parentId: 'branch-id',
@@ -160,9 +175,16 @@ describe('streaming session parsing', () => {
             'tool',
             'compaction',
             'branch-summary',
+            'usage',
         ]);
-        expect(parsed?.events.map((event) => event.components.input)).toEqual([1, 2, 3, 4]);
-        expect(parsed?.events.map((event) => event.recordedCostUsd)).toEqual([1, undefined, 0, 4]);
+        expect(parsed?.events.map((event) => event.components.input)).toEqual([1, 2, 3, 4, 5]);
+        expect(parsed?.events.map((event) => event.recordedCostUsd)).toEqual([
+            1,
+            undefined,
+            0,
+            4,
+            5,
+        ]);
         expect(parsed?.events[0].occurredAt).toBe(Date.UTC(2025, 0, 2, 1));
         expect(parsed?.events[1].occurredAt).toBe(Date.parse('2025-01-02T02:00:00.000Z'));
     });

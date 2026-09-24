@@ -19,7 +19,13 @@ export interface TokenUsageSummary extends TokenComponents {
     subagentProcessed: number;
 }
 
-export type UsageOrigin = 'assistant' | 'tool' | 'subagent' | 'compaction' | 'branch-summary';
+export type UsageOrigin =
+    | 'assistant'
+    | 'tool'
+    | 'subagent'
+    | 'compaction'
+    | 'branch-summary'
+    | 'usage';
 
 /** Internal accounting record shared by extraction, reconciliation, and aggregation. */
 export interface UsageEvent {

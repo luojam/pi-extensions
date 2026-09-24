@@ -42,7 +42,8 @@ export interface ExtractSessionEntriesOptions {
 }
 
 interface FingerprintInput {
-    carrier: 'assistant' | 'tool' | 'compaction' | 'branch-summary';
+    carrier: 'assistant' | 'tool' | 'compaction' | 'branch-summary' | 'usage';
+    kind?: string;
     role?: string;
     entryId?: string;
     ordinal?: number;
@@ -106,6 +107,7 @@ export function accountingFingerprint(input: FingerprintInput): string {
         normalizedNumber(components.cacheRead),
         normalizedNumber(components.cacheWrite),
         input.recordedCostUsd === undefined ? null : normalizedNumber(input.recordedCostUsd),
+        ...(input.carrier === 'usage' ? [input.kind ?? null] : []),
     ];
     return createHash('sha256').update(JSON.stringify(stableTuple)).digest('hex');
 }
@@ -226,6 +228,25 @@ export function extractSessionEntry(
             };
         }
         return {};
+    }
+
+    if (value.type === 'usage') {
+        return {
+            event: normalizedEvent(
+                value.usage,
+                {
+                    carrier: 'usage',
+                    ...identity,
+                    occurredAt: timestampFrom(value.timestamp),
+                    kind: stringValue(value.kind),
+                    provider: stringValue(value.provider),
+                    model: stringValue(value.model),
+                },
+                'usage',
+                sourceKey,
+                sourceFile
+            ),
+        };
     }
 
     if (value.type === 'compaction' || value.type === 'branch_summary') {
